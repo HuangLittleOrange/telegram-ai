@@ -111,8 +111,9 @@ import type {
 import type { WebApp, WebAppModalStateType, WebAppOutboundEvent } from '../../types/webapp';
 import type { DownloadableMedia } from '../helpers';
 import type { AiThinkingLog, AiThinkingTraceStepInput } from '../helpers/aiThinking';
+import type { ChatSyncMethod } from './globalState';
 import type { SharedState } from './sharedState';
-import type { MessageFetchQuery, TabState } from './tabState';
+import type { MessageFetchQuery, TabState, TimeRange } from './tabState';
 
 export type WithTabId = { tabId?: number };
 
@@ -126,6 +127,30 @@ export interface ActionPayloads {
   initApi: undefined;
   initMain: undefined;
   sync: undefined;
+  loadChatSyncStats: {
+    chatId: string;
+    threadId?: ThreadId;
+  };
+  setChatSyncMethod: {
+    chatId: string;
+    method: ChatSyncMethod;
+  };
+  setChatSyncTimeRange: {
+    chatId: string;
+    timeRange?: TimeRange;
+  };
+  startChatSync: {
+    chatId: string;
+    threadId?: ThreadId;
+  };
+  pauseChatSync: {
+    chatId: string;
+    threadId?: ThreadId;
+  };
+  resetChatSync: {
+    chatId: string;
+    threadId?: ThreadId;
+  };
   saveSession: {
     sessionData?: ApiSessionData;
   };

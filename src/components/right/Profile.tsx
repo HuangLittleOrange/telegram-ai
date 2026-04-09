@@ -121,6 +121,7 @@ import ListItem, { type MenuItemContextAction } from '../ui/ListItem';
 import Spinner from '../ui/Spinner';
 import SquareTabList, { type TabWithProperties } from '../ui/SquareTabList';
 import Transition from '../ui/Transition';
+import ChatSyncPanel from './ChatSyncPanel';
 import DeleteMemberModal from './DeleteMemberModal';
 import StarGiftCollectionList from './gifts/StarGiftCollectionList';
 import StoryAlbumList from './stories/StoryAlbumList';
@@ -1242,6 +1243,12 @@ const Profile = ({
           monoforumChannel?.id || profileId,
           isRightColumnShown && canRenderContent,
         )
+      )}
+      {!isSavedMessages && !isTopicInfo && (
+        <ChatSyncPanel
+          chatId={chatId}
+          threadId={threadId}
+        />
       )}
       {!isRestricted && (
         <div

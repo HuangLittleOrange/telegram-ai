@@ -79,7 +79,25 @@ import type {
 } from '../../types';
 import type { RegularLangFnParameters } from '../../util/localization';
 import type { SharedState } from './sharedState';
-import type { TabState } from './tabState';
+import type { TabState, TimeRange } from './tabState';
+
+export type ChatSyncMethod = 'dataExport' | 'getHistory';
+export type ChatSyncStatus = 'idle' | 'syncing' | 'paused' | 'completed' | 'error';
+
+export type ChatSyncState = {
+  selectedMethod: ChatSyncMethod;
+  selectedTimeRange?: TimeRange;
+  totalMessages?: number;
+  syncedMessages: number;
+  unsyncedMessages: number;
+  oldestSyncedDate?: number;
+  status: ChatSyncStatus;
+  cursorMessageId?: number;
+  takeoutId?: string;
+  isStatsLoading?: boolean;
+  error?: string;
+  updatedAt?: number;
+};
 
 export type GlobalState = {
   cacheVersion: number;
@@ -105,6 +123,9 @@ export type GlobalState = {
   initialUnreadNotifications?: number;
   shouldShowContextMenuHint?: boolean;
   botFreezeAppealId?: string;
+  chatSync: {
+    byChatId: Record<string, ChatSyncState>;
+  };
 
   audioPlayer: {
     volume: number;

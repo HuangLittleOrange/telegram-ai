@@ -1,0 +1,199 @@
+@use '../../styles/mixins';
+
+.ChatSyncPanel {
+  margin: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-borders);
+  border-radius: var(--border-radius-default);
+
+  background: var(--color-background);
+
+  @include mixins.adapt-padding-to-scrollbar(0.75rem);
+  @include mixins.side-panel-section;
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+  }
+
+  .title {
+    font-size: 1rem;
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .status {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+
+    &.is-syncing {
+      color: var(--color-primary);
+    }
+
+    &.is-error {
+      color: var(--color-error);
+    }
+
+    &.is-completed {
+      color: var(--color-green);
+    }
+  }
+
+  .method-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+
+    margin-bottom: 0.5rem;
+
+    font-size: 0.875rem;
+
+    .method-option {
+      cursor: pointer;
+      display: flex;
+      gap: 0.375rem;
+      align-items: center;
+    }
+  }
+
+  .warning {
+    margin-bottom: 0.5rem;
+    padding: 0.5rem;
+    border-radius: var(--border-radius-default-small);
+
+    font-size: 0.75rem;
+    color: var(--color-error);
+
+    background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  }
+
+  .range-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 0.5rem;
+
+    .range-label {
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+    }
+
+    .range-select {
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      border: 1px solid var(--color-borders);
+      border-radius: var(--border-radius-default-small);
+
+      color: var(--color-text);
+
+      background: var(--color-background);
+    }
+  }
+
+  .custom-range {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto;
+    gap: 0.375rem;
+    align-items: center;
+
+    margin-bottom: 0.5rem;
+
+    .custom-input {
+      min-width: 0;
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      border: 1px solid var(--color-borders);
+      border-radius: var(--border-radius-default-small);
+
+      color: var(--color-text);
+
+      background: var(--color-background);
+    }
+
+    .custom-separator {
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+    }
+  }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.375rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .metric-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+
+    min-width: 0;
+    padding: 0.5rem;
+    border-radius: var(--border-radius-default-small);
+
+    background: var(--color-background-secondary-accent);
+
+    .label {
+      font-size: 0.6875rem;
+      color: var(--color-text-secondary);
+    }
+
+    .value {
+      font-size: 1.25rem;
+      font-weight: var(--font-weight-semibold);
+      line-height: 1.2;
+      color: var(--color-text);
+    }
+
+    &.is-synced {
+      background: color-mix(in srgb, var(--color-green) 18%, transparent);
+
+      .value {
+        color: var(--color-green);
+      }
+    }
+  }
+
+  .progress-track {
+    position: relative;
+
+    overflow: hidden;
+
+    width: 100%;
+    height: 0.625rem;
+    margin-bottom: 0.5rem;
+    border-radius: 999px;
+
+    background: var(--color-background-secondary-accent);
+  }
+
+  .progress-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+
+    border-radius: inherit;
+
+    background: linear-gradient(90deg, var(--color-primary), var(--color-green));
+  }
+
+  .oldest {
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
+  .error {
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--color-error);
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+}

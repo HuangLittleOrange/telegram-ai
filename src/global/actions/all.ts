@@ -36,6 +36,7 @@ import './ui/stars';
 import './ui/reactions';
 import './ui/stories';
 import './ui/statistics';
+import './ui/chatSync';
 import './apiUpdaters/initial';
 import './apiUpdaters/chats';
 import './apiUpdaters/messages';

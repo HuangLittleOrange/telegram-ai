@@ -107,6 +107,9 @@ export const INITIAL_GLOBAL_STATE: GlobalState = {
   isAppUpdateAvailable: false,
   shouldShowContextMenuHint: true,
   appConfig: DEFAULT_APP_CONFIG,
+  chatSync: {
+    byChatId: {},
+  },
 
   audioPlayer: {
     volume: DEFAULT_VOLUME,

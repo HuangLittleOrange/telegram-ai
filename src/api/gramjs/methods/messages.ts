@@ -213,6 +213,116 @@ export async function fetchMessages({
   };
 }
 
+export async function initTakeoutSessionForSync() {
+  const result = await invokeRequest(new GramJs.account.InitTakeoutSession({
+    messageUsers: true,
+    messageChats: true,
+    messageMegagroups: true,
+    messageChannels: true,
+  }), {
+    shouldThrow: true,
+  });
+
+  if (!result) {
+    return undefined;
+  }
+
+  return {
+    takeoutId: result.id.toString(),
+  };
+}
+
+export async function finishTakeoutSessionForSync({ success = true }: { success?: boolean } = {}) {
+  await invokeRequest(new GramJs.account.FinishTakeoutSession({
+    success: success ? true : undefined,
+  }), {
+    shouldIgnoreErrors: true,
+  });
+}
+
+export async function fetchMessagesWithTakeout({
+  chat,
+  takeoutId,
+  threadId,
+  offsetId,
+  isSavedDialog,
+  addOffset,
+  limit,
+}: {
+  chat: ApiChat;
+  takeoutId: string;
+  threadId?: ThreadId;
+  offsetId?: number;
+  isSavedDialog?: boolean;
+  addOffset?: number;
+  limit: number;
+}) {
+  const RequestClass = threadId === MAIN_THREAD_ID
+    ? GramJs.messages.GetHistory : isSavedDialog
+      ? GramJs.messages.GetSavedHistory : GramJs.messages.GetReplies;
+  let result: any;
+
+  const historyRequest = new RequestClass({
+    hash: DEFAULT_PRIMITIVES.BIGINT,
+    maxId: DEFAULT_PRIMITIVES.INT,
+    minId: DEFAULT_PRIMITIVES.INT,
+    offsetDate: DEFAULT_PRIMITIVES.INT,
+    peer: buildInputPeer(chat.id, chat.accessHash),
+    ...(threadId !== MAIN_THREAD_ID && !isSavedDialog && {
+      msgId: Number(threadId),
+    }),
+    offsetId: offsetId ? Math.min(offsetId, MAX_INT_32) : DEFAULT_PRIMITIVES.INT,
+    addOffset: addOffset ?? DEFAULT_PRIMITIVES.INT,
+    limit,
+  });
+
+  try {
+    result = await invokeRequest(new GramJs.InvokeWithTakeout({
+      takeoutId: BigInt(takeoutId),
+      query: historyRequest,
+    }), {
+      shouldThrow: true,
+      abortControllerChatId: chat.id,
+      abortControllerThreadId: threadId,
+    });
+  } catch (err: any) {
+    if (err.errorMessage === 'CHANNEL_PRIVATE') {
+      sendApiUpdate({
+        '@type': 'updateChat',
+        id: chat.id,
+        chat: {
+          isRestricted: true,
+        },
+      });
+      return undefined;
+    }
+
+    throw err;
+  }
+
+  if (
+    !result
+    || result instanceof GramJs.messages.MessagesNotModified
+    || !result.messages
+  ) {
+    return undefined;
+  }
+
+  const messages = result.messages.map(buildApiMessage).filter(Boolean);
+  const users = result.users.map(buildApiUser).filter(Boolean);
+  const chats = result.chats.map((c: any) => buildApiChatFromPreview(c)).filter(Boolean);
+  const count = !(result instanceof GramJs.messages.Messages) ? result.count : undefined;
+  const topics = result.topics.map(buildApiTopicWithState).filter(Boolean);
+
+  return {
+    messages,
+    users,
+    chats,
+    count,
+    topics,
+  };
+}
+
 export async function fetchMessage({ chat, messageId }: { chat: ApiChat; messageId: number }) {
   const isChannel = getEntityTypeById(chat.id) === 'channel';
 

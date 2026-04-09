@@ -19,8 +19,8 @@ import {
   GLOBAL_STATE_CACHE_CUSTOM_EMOJI_LIMIT,
   GLOBAL_STATE_CACHE_DISABLED,
   GLOBAL_STATE_CACHE_USER_LIST_LIMIT,
-  MESSAGE_LIST_VIEWPORT_LIMIT,
   IS_SCREEN_LOCKED_CACHE_KEY,
+  MESSAGE_LIST_VIEWPORT_LIMIT,
   SAVED_FOLDER_ID,
   SHARED_STATE_CACHE_KEY,
 } from '../config';
@@ -34,9 +34,9 @@ import { GLOBAL_STATE_CACHE_KEY } from '../util/multiaccount';
 import { encryptSession } from '../util/passcode';
 import { onBeforeUnload, throttle } from '../util/schedulers';
 import { hasStoredSession } from '../util/sessions';
+import { collectMessageIdsToCache } from './helpers/cacheStrategy';
 import { selectThreadIdFromMessage, selectThreadInfo } from './selectors/threads';
 import { addActionHandler, getGlobal } from './index';
-import { collectMessageIdsToCache } from './helpers/cacheStrategy';
 import { INITIAL_GLOBAL_STATE, INITIAL_PERFORMANCE_STATE_MED } from './initialState';
 import { clearGlobalForLockScreen, clearSharedStateForLockScreen } from './reducers';
 import {
@@ -387,6 +387,10 @@ function unsafeMigrateCache(cached: GlobalState, initialState: GlobalState) {
   if (cached.audioPlayer.volume === undefined) {
     cached.audioPlayer.volume = initialState.audioPlayer.volume;
   }
+
+  if (!cached.chatSync) {
+    cached.chatSync = initialState.chatSync;
+  }
 }
 
 function updateCache(force?: boolean) {
@@ -457,6 +461,7 @@ function reduceGlobal<T extends GlobalState>(global: T) {
       'savedReactionTags',
       'timezones',
       'availableEffectById',
+      'chatSync',
     ]),
     lastIsChatInfoShown: !getIsMobile() ? global.lastIsChatInfoShown : undefined,
     stickers: reduceStickers(global),
