@@ -1,0 +1,730 @@
+import type { FC } from '@teact';
+import {
+  memo,
+  useEffect,
+  useState,
+} from '@teact';
+import type React from '../../lib/teact/teact';
+import type { TeactNode } from '../../lib/teact/teact';
+import { getActions, withGlobal } from '../../global';
+
+import type {
+  AiAssistantStreamStatus,
+  ToolOutput,
+} from '../../global/types/tabState';
+import type { ThreadId } from '../../types';
+import { SettingsScreens } from '../../types';
+
+import {
+  sanitizeAssistantText,
+} from '../../global/helpers/ai';
+import {
+  type AiThinkingTraceStep,
+  buildAiThinkingSummary,
+  formatAiThinkingDuration,
+} from '../../global/helpers/aiThinking';
+import { selectTabState } from '../../global/selectors';
+import buildClassName from '../../util/buildClassName';
+import { copyTextToClipboard } from '../../util/clipboard';
+import { formatAiToolOutputSummary } from './helpers/aiToolOutput';
+import {
+  type MarkdownBlock,
+  type MarkdownInlineNode,
+  parseMarkdownBlocks,
+} from './helpers/markdown';
+
+import useLastCallback from '../../hooks/useLastCallback';
+
+import Icon from '../common/icons/Icon';
+import SafeLink from '../common/SafeLink';
+import InputText from '../ui/InputText';
+
+import './AiAssistant.scss';
+
+type OwnProps = {
+  chatId: string;
+  threadId?: ThreadId;
+  isActive?: boolean;
+};
+
+type StateProps = {
+  turns: {
+    role: 'user' | 'assistant';
+    text: string;
+    createdAt: number;
+    thinkingLog?: {
+      startedAt: number;
+      endedAt?: number;
+      steps: AiThinkingTraceStep[];
+    };
+  }[];
+  isLoading?: boolean;
+  streamStatus?: AiAssistantStreamStatus;
+  activeStage?: AiThinkingTraceStep['stage'];
+  draftText?: string;
+  finalText?: string;
+  toolOutputs: ToolOutput[];
+  thinkingStage?: string;
+  thinkingStartedAt?: number;
+  thinkingEndedAt?: number;
+  thinkingTrace: {
+    stage: AiThinkingTraceStep['stage'];
+    title: string;
+    detail?: string;
+    createdAt: number;
+  }[];
+  error?: string;
+  hasApiKey: boolean;
+};
+
+function renderAssistantContent(text: string) {
+  return parseMarkdownBlocks(text).map((block, blockIndex) => renderMarkdownBlock(block, blockIndex));
+}
+
+function renderMarkdownInlineNodes(nodes: MarkdownInlineNode[], keyPrefix: string): TeactNode[] {
+  return nodes.map((node, index) => {
+    const key = `${keyPrefix}-${index}`;
+
+    switch (node.type) {
+      case 'text':
+        return <span key={key}>{node.value}</span>;
+
+      case 'strong':
+        return <strong key={key}>{renderMarkdownInlineNodes(node.children, key)}</strong>;
+
+      case 'em':
+        return <em key={key}>{renderMarkdownInlineNodes(node.children, key)}</em>;
+
+      case 'code':
+        return <code key={key} className="AiAssistant__markdown-inline-code">{node.value}</code>;
+
+      case 'link':
+        return (
+          <SafeLink key={key} url={node.href} text={node.href} className="AiAssistant__markdown-link">
+            {renderMarkdownInlineNodes(node.children, key)}
+          </SafeLink>
+        );
+    }
+  });
+}
+
+function renderMarkdownBlock(block: MarkdownBlock, blockIndex: number) {
+  switch (block.type) {
+    case 'heading': {
+      const className = block.level === 1
+        ? 'AiAssistant__markdown-heading is-h1'
+        : block.level === 2
+          ? 'AiAssistant__markdown-heading is-h2'
+          : 'AiAssistant__markdown-heading is-h3';
+
+      return (
+        <div key={blockIndex} className={className}>
+          {renderMarkdownInlineNodes(block.children, `heading-${blockIndex}`)}
+        </div>
+      );
+    }
+
+    case 'paragraph':
+      return (
+        <p key={blockIndex} className="AiAssistant__markdown-paragraph">
+          {renderMarkdownInlineNodes(block.children, `paragraph-${blockIndex}`)}
+        </p>
+      );
+
+    case 'blockquote':
+      return (
+        <blockquote key={blockIndex} className="AiAssistant__markdown-blockquote">
+          {renderMarkdownInlineNodes(block.children, `blockquote-${blockIndex}`)}
+        </blockquote>
+      );
+
+    case 'list':
+      return block.ordered ? (
+        <ol key={blockIndex} className="AiAssistant__markdown-list is-ordered">
+          {block.items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderMarkdownInlineNodes(item, `ol-${blockIndex}-${itemIndex}`)}</li>
+          ))}
+        </ol>
+      ) : (
+        <ul key={blockIndex} className="AiAssistant__markdown-list">
+          {block.items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderMarkdownInlineNodes(item, `ul-${blockIndex}-${itemIndex}`)}</li>
+          ))}
+        </ul>
+      );
+
+    case 'code':
+      return (
+        <pre key={blockIndex} className="AiAssistant__markdown-code-block">
+          {block.language && (
+            <div className="AiAssistant__markdown-code-language">{block.language}</div>
+          )}
+          <code>{block.value}</code>
+        </pre>
+      );
+
+    case 'hr':
+      return <hr key={blockIndex} className="AiAssistant__markdown-divider" />;
+  }
+}
+
+type TypingTextProps = {
+  text: string;
+  isLive?: boolean;
+  className?: string;
+  delayMs?: number;
+};
+
+const TypingText: FC<TypingTextProps> = memo(({ text, isLive, className, delayMs = 0 }) => {
+  const [visibleLength, setVisibleLength] = useState(isLive ? 0 : text.length);
+
+  useEffect(() => {
+    if (!isLive) {
+      setVisibleLength(text.length);
+      return undefined;
+    }
+
+    setVisibleLength(0);
+    if (!text) {
+      return undefined;
+    }
+
+    const totalTicks = Math.max(8, Math.min(28, text.length));
+    const charsPerTick = Math.max(1, Math.ceil(text.length / totalTicks));
+    let currentLength = 0;
+
+    let typingTimer: number | undefined;
+    const startTimer = window.setTimeout(() => {
+      typingTimer = window.setInterval(() => {
+        currentLength = Math.min(text.length, currentLength + charsPerTick);
+        setVisibleLength(currentLength);
+
+        if (currentLength >= text.length && typingTimer) {
+          window.clearInterval(typingTimer);
+        }
+      }, 22);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      if (typingTimer) {
+        window.clearInterval(typingTimer);
+      }
+    };
+  }, [delayMs, isLive, text]);
+
+  const visibleText = text.slice(0, visibleLength);
+
+  return (
+    <span className={buildClassName('AiAssistant__typingText', className)}>
+      {visibleText}
+      {Boolean(isLive && visibleLength < text.length) && (
+        <span className="AiAssistant__typingCaret" aria-hidden="true" />
+      )}
+    </span>
+  );
+});
+
+const THINKING_STAGE_LABELS: Record<AiThinkingTraceStep['stage'], string> = {
+  retriever: '收集',
+  answer: '结果',
+  summary: '总结',
+};
+
+const STREAM_STATUS_LABELS: Record<AiAssistantStreamStatus, string> = {
+  idle: '空闲',
+  streaming: '处理中',
+  cancelling: '正在中止',
+  cancelled: '已中止',
+  error: '失败',
+  done: '完成',
+};
+
+function formatToolOutputSummary(toolOutput: ToolOutput) {
+  return formatAiToolOutputSummary(toolOutput);
+}
+
+const AiAssistant: FC<OwnProps & StateProps> = ({
+  chatId,
+  threadId,
+  turns,
+  isLoading,
+  streamStatus,
+  activeStage,
+  draftText,
+  finalText,
+  toolOutputs,
+  thinkingStage,
+  thinkingStartedAt,
+  thinkingEndedAt,
+  thinkingTrace = [],
+  error,
+  hasApiKey,
+  isActive,
+}) => {
+  const {
+    openChatWithDraft,
+    openSettingsScreen,
+    clearAiTurns,
+    requestAiExtractTodos,
+    cancelAiPrompt,
+    requestAiPrompt,
+    requestAiReplySuggestions,
+    requestAiSummaryToday,
+    showNotification,
+  } = getActions();
+
+  const [prompt, setPrompt] = useState('');
+  const [now, setNow] = useState(() => Date.now());
+  const [expandedThinkingEntries, setExpandedThinkingEntries] = useState<Record<string, boolean>>({});
+  const isStreaming = streamStatus === 'streaming' || streamStatus === 'cancelling';
+  const isCancelling = streamStatus === 'cancelling';
+  const liveDraftText = streamStatus === 'done'
+    ? ''
+    : sanitizeAssistantText(finalText || draftText) || finalText || draftText || '';
+  const hasLiveDraft = Boolean(liveDraftText.trim());
+
+  useEffect(() => {
+    if (!isLoading && !isStreaming) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [isLoading, isStreaming]);
+
+  const handleSendPrompt = useLastCallback(() => {
+    if (isStreaming) {
+      cancelAiPrompt();
+      return;
+    }
+
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+
+    requestAiPrompt({ prompt: trimmed });
+    setPrompt('');
+  });
+
+  const handlePromptKeyDown = useLastCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (isStreaming) {
+        cancelAiPrompt();
+        return;
+      }
+      handleSendPrompt();
+    }
+  });
+
+  const handleInsert = useLastCallback((text: string) => {
+    openChatWithDraft({
+      chatId,
+      threadId,
+      text: { text },
+    });
+    showNotification({ message: '已插入输入框' });
+  });
+
+  const handleCopy = useLastCallback((text: string) => {
+    copyTextToClipboard(text);
+    showNotification({ message: '已复制到剪贴板' });
+  });
+
+  const handleClearHistory = useLastCallback(() => {
+    clearAiTurns();
+    setPrompt('');
+    showNotification({ message: '已清空历史记录' });
+  });
+
+  const handleRetry = useLastCallback((assistantIndex: number) => {
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+      const turn = turns[i];
+      if (turn.role === 'user') {
+        requestAiPrompt({ prompt: turn.text });
+        return;
+      }
+    }
+  });
+
+  const hasTurns = turns.length > 0;
+  const hasLiveRun = Boolean(
+    isStreaming
+    || (isLoading && (
+      Boolean(activeStage)
+      || Boolean(thinkingStage)
+      || hasLiveDraft
+      || Boolean(toolOutputs.length)
+    )),
+  );
+  const activeThinkingLog = thinkingStartedAt
+    ? {
+      startedAt: thinkingStartedAt,
+      endedAt: thinkingEndedAt,
+      steps: thinkingTrace,
+    }
+    : undefined;
+
+  const renderThinkingDisclosure = (args: {
+    log: {
+      startedAt: number;
+      endedAt?: number;
+      steps: AiThinkingTraceStep[];
+    };
+    title: string;
+    keyId: string;
+    isLive?: boolean;
+    subtitle?: string;
+  }) => {
+    const { log, title, keyId, isLive, subtitle } = args;
+    const isExpanded = expandedThinkingEntries[keyId] ?? Boolean(isLive);
+    const summary = isLive
+      ? `${title} ${formatAiThinkingDuration((log.endedAt || now) - log.startedAt)}`
+      : buildAiThinkingSummary(log).label;
+    const stepCount = log.steps.length;
+    const progressLabel = isLive
+      ? '持续推进中'
+      : stepCount
+        ? '已完成'
+        : '等待中';
+
+    return (
+      <div
+        className={buildClassName(
+          'AiAssistant__thinkingDisclosure',
+          'allow-selection',
+          isLive && 'is-live',
+          isExpanded && 'is-expanded',
+        )}
+        aria-live={isLive ? 'polite' : undefined}
+      >
+        <button
+          type="button"
+          className="AiAssistant__thinkingHeader"
+          onClick={() => {
+            setExpandedThinkingEntries((current) => ({
+              ...current,
+              [keyId]: !current[keyId],
+            }));
+          }}
+          aria-expanded={isExpanded}
+        >
+          <span className="AiAssistant__thinkingHeaderMain">
+            <span className="AiAssistant__thinkingDot" />
+            <span className="AiAssistant__thinkingHeaderTitle">{summary}</span>
+          </span>
+          <span className="AiAssistant__thinkingHeaderMeta">
+            {progressLabel}
+          </span>
+          <Icon
+            name="down"
+            className={buildClassName('AiAssistant__thinkingChevron', isExpanded && 'is-open')}
+          />
+        </button>
+
+        {subtitle && isExpanded && (
+          <div className="AiAssistant__thinkingSubtitle allow-selection">
+            <TypingText text={subtitle} isLive={Boolean(isLive)} delayMs={60} />
+          </div>
+        )}
+
+        {isExpanded && Boolean(stepCount) && (
+          <div className="AiAssistant__thinkingSteps allow-selection">
+            {log.steps.map((item, idx) => (
+              <div key={`${item.createdAt}_${idx}`} className="AiAssistant__thinkingStep">
+                <div className="AiAssistant__thinkingStepHeader">
+                  <span className="AiAssistant__thinkingStepStage">
+                    {THINKING_STAGE_LABELS[item.stage]}
+                  </span>
+                  <span className="AiAssistant__thinkingStepTitle">
+                    {isLive ? (
+                      <TypingText
+                        text={item.title}
+                        isLive
+                        className="is-live"
+                        delayMs={120 + (idx * 140)}
+                      />
+                    ) : item.title}
+                  </span>
+                </div>
+                {item.detail && (
+                  <div className="AiAssistant__thinkingStepDetail allow-selection">
+                    {isLive ? (
+                      <TypingText
+                        text={item.detail}
+                        isLive
+                        className="is-live"
+                        delayMs={180 + (idx * 140)}
+                      />
+                    ) : item.detail}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className={buildClassName('AiAssistant panel-content', !isActive && 'is-hidden')}>
+      {!hasApiKey && (
+        <div className="AiAssistant__notice">
+          <div className="AiAssistant__notice-title">需要先完成 AI 设置</div>
+          <div className="AiAssistant__notice-text">
+            请先在 AI 设置里填写 API Key，然后再让助手分析当前聊天。
+          </div>
+          <button
+            type="button"
+            className="AiAssistant__inline-link"
+            onClick={() => openSettingsScreen({ screen: SettingsScreens.Ai })}
+          >
+            打开 AI 设置
+          </button>
+        </div>
+      )}
+
+      {error && <div className="AiAssistant__error">{error}</div>}
+
+      <div className="AiAssistant__body">
+        <div className="AiAssistant__messages custom-scroll">
+          {turns.map((turn, index) => (
+            (() => {
+              const normalizedText = turn.role === 'assistant'
+                ? (sanitizeAssistantText(turn.text) || '')
+                : turn.text;
+              if (!normalizedText.trim()) {
+                return undefined;
+              }
+
+              return (
+                <div
+                  key={`${turn.createdAt}_${index}`}
+                  className={buildClassName('AiAssistant__message', `is-${turn.role}`)}
+                >
+                  <div className="AiAssistant__message-role">{turn.role === 'user' ? '你' : 'AI 助手'}</div>
+                  {turn.role === 'assistant' && turn.thinkingLog && (
+                    renderThinkingDisclosure({
+                      log: turn.thinkingLog,
+                      title: '已处理',
+                      keyId: `${turn.createdAt}_${index}`,
+                    })
+                  )}
+                  <div className="AiAssistant__message-text allow-selection">
+                    {turn.role === 'assistant' ? renderAssistantContent(normalizedText) : normalizedText}
+                  </div>
+                  {turn.role === 'assistant' && (
+                    <div className="AiAssistant__message-tools">
+                      <button
+                        type="button"
+                        className="AiAssistant__tool"
+                        onClick={() => handleInsert(normalizedText)}
+                      >
+                        插入
+                      </button>
+                      <button
+                        type="button"
+                        className="AiAssistant__tool"
+                        onClick={() => handleCopy(normalizedText)}
+                      >
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        className="AiAssistant__tool"
+                        onClick={() => handleRetry(index)}
+                      >
+                        重试
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()
+          ))}
+          {hasLiveRun && (
+            <div className="AiAssistant__liveRun AiAssistant__message is-assistant is-live">
+              <div className="AiAssistant__liveRunHeader">
+                <div className="AiAssistant__liveRunTitle">
+                  {streamStatus === 'cancelling'
+                    ? '正在中止用户的需求'
+                    : '正在处理用户的需求'}
+                </div>
+                <div className="AiAssistant__statusRow">
+                  <span className={buildClassName('AiAssistant__statusBadge', streamStatus && `is-${streamStatus}`)}>
+                    {STREAM_STATUS_LABELS[streamStatus || 'idle']}
+                  </span>
+                  {activeStage && (
+                    <span className="AiAssistant__stageBadge">
+                      {THINKING_STAGE_LABELS[activeStage]}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {Boolean((isLoading || isStreaming) && activeThinkingLog) && renderThinkingDisclosure({
+                log: activeThinkingLog!,
+                title: streamStatus === 'cancelling'
+                  ? '正在中止用户的需求'
+                  : '正在处理用户的需求',
+                keyId: `active-thinking-${thinkingStartedAt || 'now'}`,
+                isLive: true,
+                subtitle: thinkingStage,
+              })}
+
+              {hasLiveDraft && (
+                <div className="AiAssistant__liveDraft">
+                  <div className="AiAssistant__message-role">草稿答案</div>
+                  <div className="AiAssistant__message-text allow-selection">
+                    {renderAssistantContent(liveDraftText)}
+                  </div>
+                </div>
+              )}
+
+              {Boolean(toolOutputs.length) && (
+                <div className="AiAssistant__toolOutputs">
+                  {toolOutputs.slice(-3).map((toolOutput, index) => {
+                    const summary = formatToolOutputSummary(toolOutput);
+                    return (
+                      <div key={`${toolOutput.createdAt}-${index}`} className="AiAssistant__toolCard">
+                        <div className="AiAssistant__toolCardTitle">{summary.title}</div>
+                        <div className="AiAssistant__toolCardDetail">{summary.detail}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+          {!hasTurns && !isLoading && !isStreaming && (
+            <div className="AiAssistant__empty-state">
+              <div className="AiAssistant__empty-copy">
+                <div className="AiAssistant__empty-title">可以直接让我处理聊天记录</div>
+                <div className="AiAssistant__empty-text">
+                  我会读取当前聊天和历史记录，帮你总结、判断任务是否完成、生成回复，或者继续向前补充信息。
+                </div>
+                <div className="AiAssistant__quick-actions">
+                  <button
+                    type="button"
+                    className="AiAssistant__quick-action"
+                    onClick={() => requestAiSummaryToday()}
+                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
+                  >
+                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                    <span className="AiAssistant__quick-action-copy">
+                      <span className="AiAssistant__quick-action-title">整理今天</span>
+                      <span className="AiAssistant__quick-action-text">提炼今天的聊天结果</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="AiAssistant__quick-action"
+                    onClick={() => requestAiReplySuggestions()}
+                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
+                  >
+                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                    <span className="AiAssistant__quick-action-copy">
+                      <span className="AiAssistant__quick-action-title">帮我回复</span>
+                      <span className="AiAssistant__quick-action-text">生成可直接发送的回话</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="AiAssistant__quick-action"
+                    onClick={() => requestAiExtractTodos()}
+                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
+                  >
+                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                    <span className="AiAssistant__quick-action-copy">
+                      <span className="AiAssistant__quick-action-title">整理待办</span>
+                      <span className="AiAssistant__quick-action-text">提取行动项和跟进项</span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="AiAssistant__composer-shell">
+        <div className="AiAssistant__composer-row">
+          <div className="AiAssistant__composer-bar">
+            <InputText
+              className="AiAssistant__composer-input"
+              value={prompt}
+              placeholder={isStreaming ? 'AI 正在处理，点击右侧可中止' : '输入问题，AI 会自己判断要不要读取聊天记录'}
+              disabled={isStreaming}
+              onKeyDown={handlePromptKeyDown}
+              onChange={(e) => setPrompt(e.currentTarget.value)}
+            />
+          </div>
+          <div className="AiAssistant__composer-actions">
+            <button
+              type="button"
+              className="AiAssistant__clearHistory"
+              onClick={handleClearHistory}
+              disabled={!hasTurns && !hasLiveRun}
+              aria-label="清空历史"
+              title="清空历史"
+            >
+              <Icon name="delete" className="AiAssistant__clearHistory-icon" />
+              <span>清空历史</span>
+            </button>
+            <button
+              type="button"
+              className={buildClassName('AiAssistant__send is-round', isStreaming && 'is-stop')}
+              onClick={handleSendPrompt}
+              disabled={isStreaming ? isCancelling : (!hasApiKey || !prompt.trim() || Boolean(isLoading))}
+              aria-label={isStreaming ? '中止' : '发送'}
+            >
+              <Icon name={isStreaming ? 'close' : 'send'} className="AiAssistant__send-icon" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default memo(withGlobal<OwnProps>(
+  (global): Complete<StateProps> => {
+    const tabState = selectTabState(global);
+    const {
+      turns,
+      isLoading,
+      streamStatus,
+      activeStage,
+      draftText,
+      finalText,
+      toolOutputs,
+      thinkingStage,
+      thinkingStartedAt,
+      thinkingEndedAt,
+      thinkingTrace,
+      error,
+    } = tabState.aiAssistant;
+
+    const hasApiKey = Boolean(global.settings.byKey.aiSettings.apiKey?.trim());
+
+    return {
+      turns,
+      isLoading,
+      streamStatus,
+      activeStage,
+      draftText,
+      finalText,
+      toolOutputs,
+      thinkingStage,
+      thinkingStartedAt,
+      thinkingEndedAt,
+      thinkingTrace,
+      error,
+      hasApiKey,
+    };
+  },
+)(AiAssistant));

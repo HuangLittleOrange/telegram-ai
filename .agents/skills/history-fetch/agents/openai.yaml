@@ -1,0 +1,7 @@
+interface:
+  display_name: "History Fetch"
+  short_description: "Fetch Telegram messages by keyword, person, or time"
+  default_prompt: "Use $history-fetch to retrieve the chat messages needed for this Telegram task."
+
+policy:
+  allow_implicit_invocation: true
