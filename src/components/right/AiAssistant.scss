@@ -57,6 +57,201 @@
     font-weight: var(--font-weight-medium);
   }
 
+  &__syncCard {
+    position: relative;
+
+    display: grid;
+    gap: 0.5rem;
+
+    padding: 0.8125rem 0.875rem;
+    border: 1px solid var(--ai-soft-border);
+    border-radius: 1rem;
+
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--color-background) 93%, var(--color-primary) 7%),
+        color-mix(in srgb, var(--color-background) 97%, var(--color-primary) 3%)
+      );
+  }
+
+  &__syncHeader {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__syncTitle {
+    font-size: 0.9375rem;
+    font-weight: var(--font-weight-medium);
+  }
+
+  &__syncStatus {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
+  &__syncCard.is-syncing &__syncStatus {
+    color: var(--color-primary);
+  }
+
+  &__syncCard.is-completed &__syncStatus {
+    color: var(--color-green);
+  }
+
+  &__syncCard.is-error &__syncStatus {
+    color: var(--color-error);
+  }
+
+  &__syncMetrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
+  &__syncProgressTrack {
+    overflow: hidden;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: rgba(var(--color-text-secondary-rgb), 0.14);
+  }
+
+  &__syncProgressFill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-green));
+  }
+
+  &__syncOldest {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
+  &__syncError {
+    font-size: 0.75rem;
+    color: var(--color-error);
+  }
+
+  &__syncActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+
+  &__syncSettingsBackdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 1rem;
+
+    background: rgba(15, 23, 42, 0.42);
+  }
+
+  &__syncSettings {
+    display: grid;
+    gap: 0.75rem;
+
+    width: min(28rem, 100%);
+    max-height: min(80vh, 40rem);
+    padding: 0.875rem;
+    border: 1px solid var(--ai-soft-border);
+    border-radius: 1rem;
+
+    background: var(--color-background);
+  }
+
+  &__syncSettingsHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__syncSettingsTitle {
+    font-size: 1rem;
+    font-weight: var(--font-weight-medium);
+  }
+
+  &__syncSettingsClose {
+    cursor: var(--custom-cursor, pointer);
+
+    padding: 0;
+    border: 0;
+
+    font: inherit;
+    font-size: 0.875rem;
+    color: var(--color-primary);
+
+    background: none;
+  }
+
+  &__syncMethodSelector {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  &__syncMethodOption {
+    cursor: var(--custom-cursor, pointer);
+
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+
+    font-size: 0.875rem;
+  }
+
+  &__syncWarning {
+    padding: 0.625rem;
+    border-radius: 0.75rem;
+
+    font-size: 0.75rem;
+    color: var(--color-error);
+
+    background: color-mix(in srgb, var(--color-error) 11%, transparent);
+  }
+
+  &__syncRange {
+    display: grid;
+    gap: 0.3125rem;
+  }
+
+  &__syncRangeLabel {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
+  &__syncRangeSelect,
+  &__syncCustomInput {
+    min-height: 2rem;
+    padding: 0.3125rem 0.5rem;
+    border: 1px solid var(--ai-soft-border);
+    border-radius: 0.625rem;
+
+    color: var(--color-text);
+
+    background: var(--color-background);
+  }
+
+  &__syncCustomRange {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto;
+    gap: 0.375rem;
+    align-items: center;
+  }
+
+  &__syncCustomSeparator {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+
   &__body {
     overflow: hidden;
     display: flex;
@@ -893,6 +1088,30 @@
 
   @media (max-width: 600px) {
     padding: 0.875rem 0.875rem calc(0.875rem + env(safe-area-inset-bottom));
+
+    &__syncMetrics {
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    &__syncCustomRange {
+      grid-template-columns: 1fr;
+      justify-items: stretch;
+    }
+
+    &__syncCustomSeparator {
+      display: none;
+    }
+
+    &__syncSettingsBackdrop {
+      align-items: flex-end;
+      padding: 0.75rem;
+    }
+
+    &__syncSettings {
+      width: 100%;
+      max-height: 86vh;
+    }
 
     &__context-editor {
       grid-template-columns: 1fr;
