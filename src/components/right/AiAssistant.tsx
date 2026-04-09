@@ -656,41 +656,36 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
             <div className="AiAssistant__syncError">{syncState.error}</div>
           )}
           <div className="AiAssistant__syncActions">
-            {syncState.status === 'syncing' ? (
-              <Button
-                size="smaller"
-                color="translucent"
-                onClick={() => pauseChatSync({ chatId, threadId: resolvedThreadId })}
-              >
-                暂停同步
-              </Button>
-            ) : (
-              <Button
-                size="smaller"
-                color="primary"
-                onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
-              >
-                {syncState.status === 'paused' ? '继续同步' : '开始同步'}
-              </Button>
-            )}
-            <Button
-              size="smaller"
-              color="translucent"
-              disabled={syncState.status === 'syncing'}
-              onClick={() => {
-                resetChatSync({ chatId, threadId: resolvedThreadId });
-                startChatSync({ chatId, threadId: resolvedThreadId });
-              }}
-            >
-              重新同步
-            </Button>
-            <Button
-              size="smaller"
-              color="translucent"
+            <div className="AiAssistant__syncPrimarySlot">
+              {syncState.status === 'syncing' ? (
+                <Button
+                  className="AiAssistant__syncPrimaryAction"
+                  size="tiny"
+                  color="translucent"
+                  onClick={() => pauseChatSync({ chatId, threadId: resolvedThreadId })}
+                >
+                  暂停同步
+                </Button>
+              ) : (
+                <Button
+                  className="AiAssistant__syncPrimaryAction"
+                  size="tiny"
+                  color="primary"
+                  onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
+                >
+                  {syncState.status === 'paused' ? '继续同步' : '开始同步'}
+                </Button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="AiAssistant__syncSettingsTrigger"
               onClick={() => setIsSyncSettingsOpen(true)}
+              aria-label="同步设置"
+              title="同步设置"
             >
-              同步设置
-            </Button>
+              <Icon name="settings" />
+            </button>
           </div>
         </div>
       )}
@@ -802,6 +797,19 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                 </Button>
               </div>
             )}
+            <div className="AiAssistant__syncSettingsActions">
+              <Button
+                size="smaller"
+                color="translucent"
+                disabled={syncState.status === 'syncing'}
+                onClick={() => {
+                  resetChatSync({ chatId, threadId: resolvedThreadId });
+                  startChatSync({ chatId, threadId: resolvedThreadId });
+                }}
+              >
+                重新同步
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -1007,7 +1015,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
               title="清空历史"
             >
               <Icon name="delete" className="AiAssistant__clearHistory-icon" />
-              <span>清空历史</span>
             </button>
             <button
               type="button"
