@@ -60,7 +60,7 @@ describe('aiProviderStream', () => {
           done: false,
           value: Buffer.from('data: {"choices":[{"delta":{"content":"Hel"}}]}\n'),
         })
-        .mockImplementationOnce(async () => {
+        .mockImplementationOnce(() => {
           controller.abort();
           throw new DOMException('The operation was aborted.', 'AbortError');
         }),

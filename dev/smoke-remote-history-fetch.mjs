@@ -2,8 +2,8 @@
 
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -73,13 +73,13 @@ async function prepareChromeProfile() {
   return tempRoot;
 }
 
-async function readTexts(page, selector) {
+function _readTexts(page, selector) {
   return page.locator(selector).evaluateAll((nodes) => nodes
     .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean));
 }
 
-async function waitForAny(page, selectors, timeoutMs = 120_000) {
+async function _waitForAny(page, selectors, timeoutMs = 120_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     for (const selector of selectors) {
@@ -94,7 +94,7 @@ async function waitForAny(page, selectors, timeoutMs = 120_000) {
   return undefined;
 }
 
-async function domClick(locator) {
+async function _domClick(locator) {
   await locator.evaluate((node) => {
     if (node instanceof HTMLElement) {
       node.click();
@@ -105,7 +105,7 @@ async function domClick(locator) {
   });
 }
 
-async function dumpFailureContext(page, tempUserDataDir, prefix) {
+async function _dumpFailureContext(page, tempUserDataDir, prefix) {
   const bodyText = await page.locator('body').textContent().catch(() => '');
   const buttonLabels = await page.locator('button').evaluateAll((buttons) => buttons.map((button) => ({
     ariaLabel: button.getAttribute('aria-label') || '',
@@ -118,7 +118,7 @@ async function dumpFailureContext(page, tempUserDataDir, prefix) {
     path.join(tempUserDataDir, `${prefix}.txt`),
     [
       `url: ${page.url()}`,
-      `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 160), null, 2)}`,
+      `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 160), undefined, 2)}`,
       `bodyText: ${(bodyText || '').slice(0, 12000)}`,
       `screenshot: ${screenshotPath}`,
     ].join('\n\n'),
@@ -283,7 +283,7 @@ async function main() {
       timeout: 60_000,
     });
 
-    const openChatResult = await page.evaluate(async () => {
+    const openChatResult = await page.evaluate(() => {
       const hook = window.TEST_openChatByTitle;
       if (typeof hook !== 'function') {
         throw new Error('TEST_openChatByTitle is not installed');
@@ -293,7 +293,9 @@ async function main() {
     }).catch((error) => ({ error: error?.message || String(error) }));
     log(`open chat result: ${JSON.stringify(openChatResult)}`);
 
-    const currentMessageList = await page.evaluate(() => window.TEST_getCurrentMessageList?.() ?? null).catch(() => null);
+    const currentMessageList = await page
+      .evaluate(() => window.TEST_getCurrentMessageList?.() ?? undefined)
+      .catch(() => undefined);
     log(`current message list: ${JSON.stringify(currentMessageList)}`);
 
     await page.waitForFunction(() => typeof window.TEST_runMessageFetch === 'function', {
@@ -304,7 +306,7 @@ async function main() {
     const tabId = await page.evaluate(() => window.TEST_getCurrentTabId?.() ?? 1);
 
     log(`triggering direct message fetch: ${JSON.stringify(query)}`);
-    const result = await page.evaluate(async ({ queryPayload, currentTabId }) => {
+    const result = await page.evaluate(({ queryPayload, currentTabId }) => {
       const hook = window.TEST_runMessageFetch;
       if (typeof hook !== 'function') {
         throw new Error('TEST_runMessageFetch is not installed');
@@ -334,7 +336,8 @@ async function main() {
     log(`nextBeforeMessageId: ${result?.nextBeforeMessageId ?? 'n/a'}`);
     log(`days: ${JSON.stringify(Array.from(byDay.entries()))}`);
     if (firstMessage) {
-      log(`first: ${firstMessage.messageId} ${firstMessage.sender} ${firstMessage.text || firstMessage.action?.type || ''}`);
+      const firstText = firstMessage.text || firstMessage.action?.type || '';
+      log(`first: ${firstMessage.messageId} ${firstMessage.sender} ${firstText}`);
     }
     if (lastMessage && lastMessage !== firstMessage) {
       log(`last: ${lastMessage.messageId} ${lastMessage.sender} ${lastMessage.text || lastMessage.action?.type || ''}`);
@@ -346,7 +349,7 @@ async function main() {
         beforeMessageId: result.nextBeforeMessageId - 1,
       };
       log(`triggering page-2 fetch: ${JSON.stringify(secondQuery)}`);
-      const secondResult = await page.evaluate(async ({ queryPayload, currentTabId }) => {
+      const secondResult = await page.evaluate(({ queryPayload, currentTabId }) => {
         const hook = window.TEST_runMessageFetch;
         if (typeof hook !== 'function') {
           throw new Error('TEST_runMessageFetch is not installed');
@@ -370,15 +373,17 @@ async function main() {
       const secondFirst = secondMessages[0];
       const secondLast = secondMessages[secondMessages.length - 1];
       if (secondFirst) {
-        log(`page-2 first: ${secondFirst.messageId} ${secondFirst.sender} ${secondFirst.text || secondFirst.action?.type || ''}`);
+        const secondFirstText = secondFirst.text || secondFirst.action?.type || '';
+        log(`page-2 first: ${secondFirst.messageId} ${secondFirst.sender} ${secondFirstText}`);
       }
       if (secondLast && secondLast !== secondFirst) {
-        log(`page-2 last: ${secondLast.messageId} ${secondLast.sender} ${secondLast.text || secondLast.action?.type || ''}`);
+        const secondLastText = secondLast.text || secondLast.action?.type || '';
+        log(`page-2 last: ${secondLast.messageId} ${secondLast.sender} ${secondLastText}`);
       }
     }
 
     log('triggering sanity recent-500 fetch');
-    const recentResult = await page.evaluate(async ({ currentTabId }) => {
+    const recentResult = await page.evaluate(({ currentTabId }) => {
       const hook = window.TEST_runMessageFetch;
       if (typeof hook !== 'function') {
         throw new Error('TEST_runMessageFetch is not installed');
@@ -406,10 +411,12 @@ async function main() {
     const recentFirst = recentMessages[0];
     const recentLast = recentMessages[recentMessages.length - 1];
     if (recentFirst) {
-      log(`recent-500 first: ${recentFirst.messageId} ${recentFirst.sender} ${recentFirst.text || recentFirst.action?.type || ''}`);
+      const recentFirstText = recentFirst.text || recentFirst.action?.type || '';
+      log(`recent-500 first: ${recentFirst.messageId} ${recentFirst.sender} ${recentFirstText}`);
     }
     if (recentLast && recentLast !== recentFirst) {
-      log(`recent-500 last: ${recentLast.messageId} ${recentLast.sender} ${recentLast.text || recentLast.action?.type || ''}`);
+      const recentLastText = recentLast.text || recentLast.action?.type || '';
+      log(`recent-500 last: ${recentLast.messageId} ${recentLast.sender} ${recentLastText}`);
     }
     log(`pageClosed: ${pageClosed}`);
     log(`browserDisconnected: ${browserDisconnected}`);

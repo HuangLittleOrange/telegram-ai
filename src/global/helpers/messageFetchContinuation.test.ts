@@ -1,9 +1,9 @@
 jest.mock('../cache', () => ({
-  loadCachedGlobal: jest.fn(async () => undefined),
+  loadCachedGlobal: jest.fn(() => undefined),
 }));
 
 jest.mock('../../api/gramjs', () => ({
-  callApi: jest.fn(async () => {
+  callApi: jest.fn(() => {
     throw new Error('callApi should not be called in continuation tests');
   }),
 }));
@@ -13,11 +13,11 @@ jest.mock('../../util/establishMultitabRole', () => ({
 }));
 
 jest.mock('../../util/localization', () => ({
-  getTranslationFn: jest.fn(() => ((value: string) => value)),
+  getTranslationFn: jest.fn(() => (value: string) => value),
 }));
 
 jest.mock('../../util/schedulers', () => ({
-  pause: jest.fn(async () => undefined),
+  pause: jest.fn(() => undefined),
 }));
 
 jest.mock('../selectors', () => ({
@@ -457,8 +457,8 @@ describe('messageFetch continuation', () => {
         limit: 2,
       },
       fetchOnce,
-        maxRounds: 4,
-      });
+      maxRounds: 4,
+    });
 
     expect(fetchOnce).toHaveBeenCalledTimes(3);
     expect(result.messages.map((item) => item.messageId)).toEqual([297, 298, 299, 300]);

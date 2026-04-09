@@ -1,5 +1,6 @@
 import { addCallback } from '../../../lib/teact/teactn';
 
+import type { ApiMessage } from '../../../api/types';
 import type { ThreadId, ThreadLocalState } from '../../../types';
 import type { RequiredGlobalActions } from '../../index';
 import type { ActionReturnType, GlobalState } from '../../types';
@@ -186,17 +187,17 @@ async function loadAndReplaceMessages<T extends GlobalState>(global: T, actions:
             return topicThreadInfo?.lastMessageId ? currentChatMessages[topicThreadInfo.lastMessageId] : undefined;
           }).filter(Boolean) : [];
 
-        const resultMessageIds = result.messages.map(({ id }) => id);
+        const resultMessageIds = result.messages.map(({ id }: ApiMessage) => id);
         const messagesThreads = pick(global.messages.byChatId[currentChatId].threadsById, resultMessageIds);
 
         const isDiscussionStartLoaded = !result.messages.length
-          || result.messages.some(({ id }) => id === resultDiscussion?.firstMessageId);
+          || result.messages.some(({ id }: ApiMessage) => id === resultDiscussion?.firstMessageId);
         const threadStartMessages = (isDiscussionStartLoaded && resultDiscussion?.topMessages) || [];
-        const refreshedViewportIds = refreshedViewportMessages?.map(({ id }) => id) || [];
+        const refreshedViewportIds = refreshedViewportMessages?.map(({ id }: ApiMessage) => id) || [];
         const allMessages = threadStartMessages.concat(result.messages, refreshedViewportMessages || [], localMessages);
         const allMessagesWithTopicLastMessages = allMessages.concat(topicLastMessages);
-        const byId = buildCollectionByKey(allMessagesWithTopicLastMessages, 'id');
-        const listedIds = unique(refreshedViewportIds.concat(allMessages.map(({ id }) => id)));
+        const byId = buildCollectionByKey(allMessagesWithTopicLastMessages, 'id') as Record<number, ApiMessage>;
+        const listedIds = unique(refreshedViewportIds.concat(allMessages.map(({ id }: ApiMessage) => id)));
 
         if (!wasReset) {
           global = resetMessages(global, preservedCurrentThreadsByChatId);
@@ -216,7 +217,11 @@ async function loadAndReplaceMessages<T extends GlobalState>(global: T, actions:
           global = replaceThreadLocalStateParam(
             global, currentChatId, activeThreadId, 'firstMessageId', resultDiscussion.firstMessageId,
           );
-          global = addChatMessagesById(global, currentChatId, buildCollectionByKey(resultDiscussion.topMessages, 'id'));
+          global = addChatMessagesById(
+            global,
+            currentChatId,
+            buildCollectionByKey(resultDiscussion.topMessages, 'id') as Record<number, ApiMessage>,
+          );
         }
         global = updateListedIds(global, currentChatId, activeThreadId, listedIds);
 

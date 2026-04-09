@@ -10,9 +10,9 @@ describe('aiAgentRuntime', () => {
         { role: 'system', content: 'system prompt' },
         { role: 'user', content: 'BitTensor 是什么？' },
       ],
-      complete: async (messages) => {
+      complete: (messages) => {
         if (messages.length === 2) {
-          return {
+          return Promise.resolve({
             content: '我先查一下',
             toolCalls: [{
               id: 'call-1',
@@ -22,14 +22,14 @@ describe('aiAgentRuntime', () => {
                 arguments: '{"mode":"recent","limit":5}',
               },
             }],
-          };
+          });
         }
 
-        return {
+        return Promise.resolve({
           content: 'BitTensor 是一个去中心化的机器学习网络。',
-        };
+        });
       },
-      executeTool: async (toolCall) => ({
+      executeTool: (toolCall) => Promise.resolve({
         role: 'tool' as const,
         tool_call_id: toolCall.id,
         name: toolCall.function.name,
@@ -70,14 +70,14 @@ describe('aiAgentRuntime', () => {
         { role: 'assistant', content: '上一轮 AI 回复' },
         { role: 'user', content: '最近一周聊了什么' },
       ],
-      complete: async (messages) => {
+      complete: (messages) => {
         seenMessages.push(messages.map((message) => ({
           role: message.role,
           content: message.content,
         })));
 
         if (seenMessages.length === 1) {
-          return {
+          return Promise.resolve({
             content: '我先查一下',
             toolCalls: [{
               id: 'call-1',
@@ -87,21 +87,21 @@ describe('aiAgentRuntime', () => {
                 arguments: '{"mode":"recent","limit":5}',
               },
             }],
-          };
+          });
         }
 
-        return {
+        return Promise.resolve({
           content: '最终答案',
-        };
+        });
       },
-      executeTool: async (toolCall) => {
+      executeTool: (toolCall) => {
         expect(toolCall.function.name).toBe('history-fetch');
-        return {
+        return Promise.resolve({
           role: 'tool' as const,
           tool_call_id: toolCall.id,
           name: toolCall.function.name,
           content: '{"messages":[{"messageId":1}],"total":1}',
-        };
+        });
       },
     });
 

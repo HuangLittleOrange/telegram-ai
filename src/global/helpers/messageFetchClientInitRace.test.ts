@@ -1,11 +1,11 @@
 const mockMainThreadId = -1;
 
 jest.mock('../cache', () => ({
-  loadCachedGlobal: jest.fn(async () => undefined),
+  loadCachedGlobal: jest.fn(() => undefined),
 }));
 
 jest.mock('../../api/gramjs', () => ({
-  callApi: jest.fn(async () => {
+  callApi: jest.fn(() => {
     throw new Error('callApi should not be called in client init race tests');
   }),
 }));
@@ -15,11 +15,11 @@ jest.mock('../../util/establishMultitabRole', () => ({
 }));
 
 jest.mock('../../util/localization', () => ({
-  getTranslationFn: jest.fn(() => ((value: string) => value)),
+  getTranslationFn: jest.fn(() => (value: string) => value),
 }));
 
 jest.mock('../../util/schedulers', () => ({
-  pause: jest.fn(async () => undefined),
+  pause: jest.fn(() => undefined),
 }));
 
 jest.mock('../selectors', () => ({
@@ -61,9 +61,7 @@ jest.mock('./peers', () => ({
 
 import { runMessageFetch, runMessageFetchWithContinuation } from './messageFetch';
 
-const { callApi } = jest.requireMock('../../api/gramjs') as {
-  callApi: jest.Mock;
-};
+const { callApi } = jest.requireMock('../../api/gramjs');
 
 describe('messageFetch client init race', () => {
   it('falls back locally when connectionState is ready but the gramjs client is not initialized', async () => {
@@ -95,8 +93,8 @@ describe('messageFetch client init race', () => {
         },
         limit: 10,
       },
-      fetchOnce: async (query) => runMessageFetch(global, query, 1),
-      onPageFetched: async (page) => {
+      fetchOnce: (query) => runMessageFetch(global, query, 1),
+      onPageFetched: (page) => {
         pageResults.push({
           total: page.total,
           summary: page.summary,

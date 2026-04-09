@@ -10,6 +10,7 @@ import type {
   ApiMessage,
   ApiOnProgress,
   ApiStory,
+  ApiTopicWithState,
   ApiUser,
   MediaContent,
 } from '../../../api/types';
@@ -1853,7 +1854,7 @@ async function loadViewportMessages<T extends GlobalState>(
     global = updateThreadInfoMessagesCount(global, chat.id, threadId, count);
   }
 
-  topics.forEach((topicState) => {
+  topics.forEach((topicState: ApiTopicWithState) => {
     global = updateTopicWithState(global, chat.id, topicState);
   });
 

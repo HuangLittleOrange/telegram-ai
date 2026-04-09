@@ -1,17 +1,17 @@
 const mockMainThreadId = -1;
 
 jest.mock('../cache', () => ({
-  loadCachedGlobal: jest.fn(async () => undefined),
+  loadCachedGlobal: jest.fn(() => undefined),
 }));
 
 jest.mock('../../api/gramjs', () => ({
-  callApi: jest.fn(async () => {
+  callApi: jest.fn(() => {
     throw new Error('callApi should be mocked in messageFetch tests');
   }),
 }));
 
 jest.mock('../../util/schedulers', () => ({
-  pause: jest.fn(async () => undefined),
+  pause: jest.fn(() => undefined),
 }));
 
 jest.mock('../../util/establishMultitabRole', () => ({
@@ -19,7 +19,7 @@ jest.mock('../../util/establishMultitabRole', () => ({
 }));
 
 jest.mock('../../util/localization', () => ({
-  getTranslationFn: jest.fn(() => ((value: string) => value)),
+  getTranslationFn: jest.fn(() => (value: string) => value),
 }));
 
 jest.mock('../selectors', () => ({
@@ -61,12 +61,8 @@ jest.mock('./peers', () => ({
 
 import { runMessageFetch } from './messageFetch';
 
-const { callApi } = jest.requireMock('../../api/gramjs') as {
-  callApi: jest.Mock;
-};
-const { pause } = jest.requireMock('../../util/schedulers') as {
-  pause: jest.Mock;
-};
+const { callApi } = jest.requireMock('../../api/gramjs');
+const { pause } = jest.requireMock('../../util/schedulers');
 
 describe('messageFetch', () => {
   beforeEach(() => {
@@ -243,7 +239,7 @@ describe('messageFetch', () => {
       id: 'chat-1',
       accessHash: 'hash-1',
     });
-    callApi.mockImplementation(async () => {
+    callApi.mockImplementation(() => {
       throw new Error('Not connected');
     });
 
@@ -704,6 +700,7 @@ describe('messageFetch', () => {
     expect(result.total).toBe(1);
   });
 
+  // eslint-disable-next-line @stylistic/max-len
   it('still remote backfills a range query when local messages exist near the boundaries but no coverage metadata was recorded', async () => {
     const selectChatMessages = jest.requireMock('../selectors/messages').selectChatMessages as jest.Mock;
     const selectThreadLocalState = jest.requireMock('../selectors/threads').selectThreadLocalState as jest.Mock;

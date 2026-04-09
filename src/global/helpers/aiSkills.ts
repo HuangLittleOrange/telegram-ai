@@ -1,9 +1,9 @@
-import type { AiJudgeDecision, AiQueryPlan } from './aiOrchestrator';
 import type {
   MessageFetchQuery,
   PersonRef,
   TimeRange,
 } from '../types/tabState';
+import type { AiJudgeDecision, AiQueryPlan } from './aiOrchestrator';
 
 export type AiSkillInvocation =
   | {
@@ -24,8 +24,10 @@ export const AI_SKILL_GUIDANCE = [
   '可用技能/工具：`history-fetch`。',
   '用途：从当前聊天中按人、按关键词、按时间范围或最近 N 条获取消息，用来补充上下文。',
   '时间范围优先使用结构化的 `timeRange` 对象。',
-  '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，优先用 `timeRange: { \"mode\": \"preset\", \"value\": \"lastWeek\" | \"thisWeek\" | \"thisMonth\" | \"today\" | \"yesterday\" }`。',
-  '只有用户明确给出具体日期时，才用 `timeRange: { \"fromDate\": \"YYYY-MM-DD\", \"toDate\": \"YYYY-MM-DD\" }`。',
+  '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，'
+  + '优先用 `timeRange: { "mode": "preset", "value": "lastWeek" | "thisWeek" | "thisMonth" | "today" | "yesterday" }`。',
+  '只有用户明确给出具体日期时，'
+  + '才用 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
   '调用前先明确你缺什么信息，再为工具准备结构化查询参数。',
   '不要根据用户问题里的字面词做路由判断；历史查询只通过 `toolArgs` 和结构化的 `toolQueryHints` 传递。',
   '尽量把参数写进 `toolArgs`，并保留 `toolQueryHints` 作为补充线索。',
@@ -215,6 +217,8 @@ function normalizeHistoryFetchPersonHint(value: unknown): PersonRef | undefined 
 }
 
 function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefined {
+  type PresetTimeRangeValue = Extract<TimeRange, { mode: 'preset' }>['value'];
+
   const normalizeTimeValue = (input: unknown, boundary: 'start' | 'end' = 'start') => {
     if (typeof input === 'string') {
       const trimmed = input.trim();
@@ -255,11 +259,19 @@ function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefin
     return numeric < 1e12 ? numeric * 1000 : numeric;
   };
 
-  const normalizePreset = (preset: unknown) => {
-    if (preset === 'today' || preset === 'yesterday' || preset === 'thisWeek' || preset === 'lastWeek' || preset === 'thisMonth') {
+  const normalizePreset = (
+    preset: unknown,
+  ): { mode: 'preset'; value: PresetTimeRangeValue } | undefined => {
+    if (
+      preset === 'today'
+      || preset === 'yesterday'
+      || preset === 'thisWeek'
+      || preset === 'lastWeek'
+      || preset === 'thisMonth'
+    ) {
       return {
         mode: 'preset' as const,
-        value: preset as Extract<TimeRange, { mode: 'preset' }>['value'],
+        value: preset,
       };
     }
     return undefined;
@@ -391,10 +403,10 @@ function normalizeHistoryFetchQueryHint(
   const candidate = hint as Record<string, unknown>;
   const wrappedHint: NormalizedHistoryFetchQueryHint | undefined = normalizeHistoryFetchQueryHint(
     candidate.toolArgs
-      ?? candidate.query
-      ?? candidate.arguments
-      ?? candidate.params
-      ?? candidate.input,
+    ?? candidate.query
+    ?? candidate.arguments
+    ?? candidate.params
+    ?? candidate.input,
     fallbackLimit,
   );
   if (wrappedHint) {
@@ -405,7 +417,12 @@ function normalizeHistoryFetchQueryHint(
     candidate.keyword ?? candidate.query ?? candidate.text ?? candidate.value,
   );
   const person = normalizeHistoryFetchPersonHint(
-    candidate.person ?? candidate.personRef ?? candidate.persona ?? candidate.user ?? candidate.sender ?? candidate.author,
+    candidate.person
+    ?? candidate.personRef
+    ?? candidate.persona
+    ?? candidate.user
+    ?? candidate.sender
+    ?? candidate.author,
   );
   const timeRange = normalizeHistoryFetchTimeRangeHint(
     candidate.timeRange ?? candidate.range ?? candidate.dateRange ?? candidate.time,

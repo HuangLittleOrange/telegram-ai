@@ -2,8 +2,8 @@
 
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -73,7 +73,7 @@ async function prepareChromeProfile() {
   return tempRoot;
 }
 
-async function readTexts(page, selector) {
+function readTexts(page, selector) {
   return page.locator(selector).evaluateAll((nodes) => nodes
     .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean));
@@ -176,7 +176,7 @@ async function main() {
           return {
             matches: false,
             media: query,
-            onchange: null,
+            onchange: undefined,
             addEventListener: () => {},
             removeEventListener: () => {},
             addListener: () => {},
@@ -245,7 +245,7 @@ async function main() {
       tablet: window.matchMedia('(max-width: 1275px)').matches,
       bodyClass: document.body.className,
       mainClass: document.getElementById('Main')?.className || '',
-    })).catch(() => null);
+    })).catch(() => undefined);
     if (layoutSnapshot) {
       log(`layout snapshot: ${JSON.stringify(layoutSnapshot)}`);
     }
@@ -273,7 +273,7 @@ async function main() {
         path.join(tempUserDataDir, 'ai-history-smoke-ai-button-failure.txt'),
         [
           `url: ${page.url()}`,
-          `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 120), null, 2)}`,
+          `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 120), undefined, 2)}`,
           `bodyText: ${(bodyText || '').slice(0, 8000)}`,
           `screenshot: ${screenshotPath}`,
         ].join('\n\n'),
@@ -287,9 +287,12 @@ async function main() {
     const rightColumn = page.locator('#RightColumn-wrapper');
     const composer = page.locator('.AiAssistant__composer-shell input.form-control');
     try {
-      await page.waitForFunction(() => Boolean(document.querySelector('.AiAssistant__composer-shell input.form-control')), {
-        timeout: 60_000,
-      });
+      await page.waitForFunction(
+        () => Boolean(document.querySelector('.AiAssistant__composer-shell input.form-control')),
+        {
+          timeout: 60_000,
+        },
+      );
     } catch (error) {
       const rightWrapperClass = await rightColumn.getAttribute('class').catch(() => '');
       const bodyText = await page.locator('body').textContent().catch(() => '');
@@ -305,7 +308,7 @@ async function main() {
         [
           `url: ${page.url()}`,
           `rightWrapperClass: ${rightWrapperClass || ''}`,
-          `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 120), null, 2)}`,
+          `buttonLabels: ${JSON.stringify(buttonLabels.slice(0, 120), undefined, 2)}`,
           `bodyText: ${(bodyText || '').slice(0, 8000)}`,
           `screenshot: ${screenshotPath}`,
         ].join('\n\n'),
@@ -349,7 +352,7 @@ async function main() {
         value: input instanceof HTMLInputElement ? input.value : '',
         sendDisabled: Boolean(send instanceof HTMLButtonElement && send.disabled),
       };
-    }).catch(() => null);
+    }).catch(() => undefined);
     if (composerState) {
       log(`composer state: ${JSON.stringify(composerState)}`);
     }
@@ -380,7 +383,8 @@ async function main() {
       const thinkingTitleTexts = await readTexts(page, '.AiAssistant__thinkingStepTitle').catch(() => []);
       const thinkingDetailTexts = await readTexts(page, '.AiAssistant__thinkingStepDetail').catch(() => []);
       const toolCardTexts = await readTexts(page, '.AiAssistant__toolCardDetail').catch(() => []);
-      const assistantAnswers = await readTexts(page, '.AiAssistant__message.is-assistant:not(.is-live) .AiAssistant__message-text').catch(() => []);
+      const assistantSelector = '.AiAssistant__message.is-assistant:not(.is-live) .AiAssistant__message-text';
+      const assistantAnswers = await readTexts(page, assistantSelector).catch(() => []);
       const errorText = await page.locator('.AiAssistant__error').textContent().catch(() => '');
       const liveCount = await page.locator('.AiAssistant__liveRun').count().catch(() => 0);
 
@@ -433,12 +437,18 @@ async function main() {
     const finalThinkingTitles = await readTexts(page, '.AiAssistant__thinkingStepTitle').catch(() => []);
     const finalThinkingDetails = await readTexts(page, '.AiAssistant__thinkingStepDetail').catch(() => []);
     const finalToolCards = await readTexts(page, '.AiAssistant__toolCardDetail').catch(() => []);
-    const finalAssistantAnswers = await readTexts(page, '.AiAssistant__message.is-assistant:not(.is-live) .AiAssistant__message-text').catch(() => []);
+    const finalAssistantSelector = '.AiAssistant__message.is-assistant:not(.is-live) .AiAssistant__message-text';
+    const finalAssistantAnswers = await readTexts(page, finalAssistantSelector).catch(() => []);
     const finalError = await page.locator('.AiAssistant__error').textContent().catch(() => '');
 
     log('--- snapshots ---');
     snapshots.forEach((snapshot, index) => {
-      log(`snapshot ${index + 1}: live=${snapshot.liveCount} answers=${snapshot.assistantAnswers.length} tools=${snapshot.toolCardTexts.length}`);
+      log(
+        `snapshot ${index + 1}:`
+        + ` live=${snapshot.liveCount}`
+        + ` answers=${snapshot.assistantAnswers.length}`
+        + ` tools=${snapshot.toolCardTexts.length}`,
+      );
       if (snapshot.errorText) {
         log(`  error: ${snapshot.errorText}`);
       }

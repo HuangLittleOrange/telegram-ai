@@ -3,8 +3,8 @@ import type {
   MessageFetchQuery,
   MessageFetchResult,
   PersonRef,
-  ToolOutput,
   TimeRange,
+  ToolOutput,
 } from '../types/tabState';
 import type { AiChatMessage, AiToolCall } from './aiAgentRuntime';
 import type {
@@ -89,7 +89,9 @@ export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
       '唯一工具是 `history-fetch`。',
       '用途：按人、关键词、时间范围或最近 N 条补充聊天上下文。',
       '时间范围优先使用结构化的 `timeRange` 对象。',
-      '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，优先用 `timeRange: { "mode": "preset", "value": "lastWeek" | "thisWeek" | "thisMonth" | "today" | "yesterday" }`。',
+      '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，'
+      + '优先用 `timeRange: { "mode": "preset",'
+      + ' "value": "lastWeek" | "thisWeek" | "thisMonth" | "today" | "yesterday" }`。',
       '只有用户明确给出具体日期时，才用 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
       '只使用结构化参数，不要根据用户问题里的字面词做路由判断。',
       '`toolArgs` 是首选；`toolQueryHints` 也必须是结构化对象，作为补充线索。',
@@ -419,11 +421,21 @@ export function buildPersistentAiHistoryMessages(
 }
 
 function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefined {
-  const normalizePreset = (preset: unknown) => {
-    if (preset === 'today' || preset === 'yesterday' || preset === 'thisWeek' || preset === 'lastWeek' || preset === 'thisMonth') {
+  type PresetTimeRangeValue = Extract<TimeRange, { mode: 'preset' }>['value'];
+
+  const normalizePreset = (
+    preset: unknown,
+  ): { mode: 'preset'; value: PresetTimeRangeValue } | undefined => {
+    if (
+      preset === 'today'
+      || preset === 'yesterday'
+      || preset === 'thisWeek'
+      || preset === 'lastWeek'
+      || preset === 'thisMonth'
+    ) {
       return {
         mode: 'preset' as const,
-        value: preset as Extract<TimeRange, { mode: 'preset' }>['value'],
+        value: preset,
       };
     }
     return undefined;
@@ -505,7 +517,7 @@ function normalizeHistoryFetchQueryHint(
     if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
       try {
         const parsed = JSON.parse(trimmed);
-        const normalized: NormalizedHistoryFetchQueryHint | undefined = normalizeHistoryFetchQueryHint(parsed, fallbackLimit);
+        const normalized = normalizeHistoryFetchQueryHint(parsed, fallbackLimit);
         if (normalized) {
           return normalized;
         }
@@ -526,7 +538,12 @@ function normalizeHistoryFetchQueryHint(
     candidate.keyword ?? candidate.query ?? candidate.text ?? candidate.value,
   );
   const person = normalizeHistoryFetchPersonHint(
-    candidate.person ?? candidate.personRef ?? candidate.persona ?? candidate.user ?? candidate.sender ?? candidate.author,
+    candidate.person
+    ?? candidate.personRef
+    ?? candidate.persona
+    ?? candidate.user
+    ?? candidate.sender
+    ?? candidate.author,
   );
   const timeRange = normalizeHistoryFetchTimeRangeHint(
     candidate.timeRange ?? candidate.range ?? candidate.dateRange ?? candidate.time,
@@ -571,7 +588,6 @@ export function buildHistoryFetchQueryFromToolHints(args: {
   defaultLimit?: number;
 }): MessageFetchQuery | undefined {
   const {
-    userPrompt,
     plan,
     judge,
     defaultLimit = 100,
@@ -603,7 +619,9 @@ export function buildHistoryFetchQueryFromToolHints(args: {
         mode: 'person',
         person: normalized.person,
         ...(normalized.timeRange ? { timeRange: normalized.timeRange } : {}),
-        ...(normalized.limit ? { limit: normalized.limit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+        ...(normalized.limit
+          ? { limit: normalized.limit }
+          : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
       };
     }
 
@@ -611,7 +629,9 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       return {
         mode: 'range',
         timeRange: normalized.timeRange,
-        ...(normalized.limit ? { limit: normalized.limit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+        ...(normalized.limit
+          ? { limit: normalized.limit }
+          : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
       };
     }
 

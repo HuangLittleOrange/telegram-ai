@@ -2,26 +2,26 @@ import {
   buildAiConversationMessages,
   buildAiFinalAnswerSystemPrompt,
   buildAiFinalAnswerTaskPrompt,
-  buildPersistentAiHistoryMessages,
-  buildHistoryFetchFallbackAnswer,
-  buildHistoryFetchQueryFromToolHints,
   buildAiSystemPrompt,
   buildAiTaskPrompt,
+  buildHistoryFetchFallbackAnswer,
+  buildHistoryFetchQueryFromToolHints,
+  buildPersistentAiHistoryMessages,
   clampAiContextLimit,
-  formatHistoryFetchPageProgress,
-  formatHistoryFetchFloodWaitProgress,
   formatAiPromptConversationContextLines,
   formatAiPromptEvidenceLines,
   formatAiPromptToolOutputLines,
+  formatHistoryFetchFloodWaitProgress,
+  formatHistoryFetchPageProgress,
   formatHistoryFetchToolResultForModel,
   formatRawMessageExport,
   getAiApiUrl,
   parseGeminiAssistantText,
   parseOpenAiAssistantText,
   pickRecentMessageIds,
+  sanitizeAssistantText,
   serializeOpenAiCompatibleMessages,
   shouldOfferHistoryFetchTool,
-  sanitizeAssistantText,
 } from './ai';
 
 describe('ai helper', () => {
@@ -488,7 +488,7 @@ describe('ai helper', () => {
 
     it('keeps all prior turns in chronological order', () => {
       const turns = Array.from({ length: 14 }, (_, index) => ({
-        role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
         content: `turn-${index + 1}`,
       }));
 

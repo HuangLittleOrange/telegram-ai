@@ -435,8 +435,8 @@ function getTelegramFloodWaitMs(error: unknown) {
     && typeof error === 'object'
     && 'seconds' in error
     && typeof (error as { seconds?: unknown }).seconds === 'number'
-      ? (error as { seconds: number }).seconds
-      : undefined;
+    ? (error as { seconds?: number }).seconds
+    : undefined;
 
   if (secondsFromField && secondsFromField > 0) {
     return secondsFromField * 1000;
@@ -876,8 +876,8 @@ export async function runMessageFetch(
 
       const apiState = mergeFetchedPeers(global, page);
       const pageCandidates = page.messages
-        .map((message) => toCandidate(message, apiState, 'api'))
-        .sort((left, right) => compareMessagesDesc(left.message, right.message));
+        .map((message: ApiMessage) => toCandidate(message, apiState, 'api'))
+        .sort((left: CandidateMessage, right: CandidateMessage) => compareMessagesDesc(left.message, right.message));
       const matchedPageCandidates: CandidateMessage[] = [];
 
       for (const candidate of pageCandidates) {
@@ -892,7 +892,9 @@ export async function runMessageFetch(
         }
       }
 
-      const pageIds = page.messages.map(({ id }) => id).filter((id) => Number.isFinite(id));
+      const pageIds = page.messages
+        .map(({ id }: ApiMessage) => id)
+        .filter((id: number) => Number.isFinite(id));
       if (!pageIds.length) {
         break;
       }
@@ -947,7 +949,7 @@ export async function runMessageFetchWithContinuation(
   const combinedMessages: MessageFetchResult['messages'] = [];
   const combinedSourceMessages: ApiMessage[] = [];
   const seenMessageIds = new Set<number>();
-  let currentQuery: Extract<MessageFetchQuery, { mode: 'range' }> = query;
+  const currentQuery: Extract<MessageFetchQuery, { mode: 'range' }> = { ...query };
   let truncated = false;
   let summary: string | undefined;
   let previousCursorId: number | undefined;

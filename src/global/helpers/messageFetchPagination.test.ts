@@ -1,11 +1,11 @@
 const mockMainThreadId = -1;
 
 jest.mock('../cache', () => ({
-  loadCachedGlobal: jest.fn(async () => undefined),
+  loadCachedGlobal: jest.fn(() => undefined),
 }));
 
 jest.mock('../../api/gramjs', () => ({
-  callApi: jest.fn(async () => {
+  callApi: jest.fn(() => {
     throw new Error('callApi should be mocked in pagination tests');
   }),
 }));
@@ -15,11 +15,11 @@ jest.mock('../../util/establishMultitabRole', () => ({
 }));
 
 jest.mock('../../util/localization', () => ({
-  getTranslationFn: jest.fn(() => ((value: string) => value)),
+  getTranslationFn: jest.fn(() => (value: string) => value),
 }));
 
 jest.mock('../../util/schedulers', () => ({
-  pause: jest.fn(async () => undefined),
+  pause: jest.fn(() => undefined),
 }));
 
 jest.mock('../selectors', () => ({
@@ -61,12 +61,8 @@ jest.mock('./peers', () => ({
 
 import { runMessageFetch } from './messageFetch';
 
-const { callApi } = jest.requireMock('../../api/gramjs') as {
-  callApi: jest.Mock;
-};
-const { selectChat } = jest.requireMock('../selectors') as {
-  selectChat: jest.Mock;
-};
+const { callApi } = jest.requireMock('../../api/gramjs');
+const { selectChat } = jest.requireMock('../selectors');
 
 function buildPage(startId: number, count: number) {
   return {
@@ -106,7 +102,7 @@ describe('messageFetch pagination', () => {
     ];
     let pageIndex = 0;
 
-    callApi.mockImplementation(async (name: string) => {
+    callApi.mockImplementation((name: string) => {
       if (name !== 'fetchMessages') {
         throw new Error(`Unexpected method: ${name}`);
       }
@@ -139,7 +135,7 @@ describe('messageFetch pagination', () => {
   });
 
   it('uses beforeMessageId as the offset cursor for range queries', async () => {
-    callApi.mockImplementation(async (name: string) => {
+    callApi.mockImplementation((name: string) => {
       if (name !== 'fetchMessages') {
         throw new Error(`Unexpected method: ${name}`);
       }
@@ -176,7 +172,7 @@ describe('messageFetch pagination', () => {
 
   it('keeps range queries inside the requested time window', async () => {
     callApi
-      .mockImplementationOnce(async () => ({
+      .mockImplementationOnce(() => ({
         messages: [
           {
             id: 300,
@@ -206,7 +202,7 @@ describe('messageFetch pagination', () => {
         users: [],
         chats: [],
       }))
-      .mockImplementationOnce(async () => ({
+      .mockImplementationOnce(() => ({
         messages: [
           {
             id: 297,
@@ -292,7 +288,7 @@ describe('messageFetch pagination', () => {
     const pages = Array.from({ length: 6 }, (_, page) => buildPage(600 - (page * 20), 20));
     let pageIndex = 0;
 
-    callApi.mockImplementation(async () => {
+    callApi.mockImplementation(() => {
       const page = pages[pageIndex];
       pageIndex += 1;
       return page;

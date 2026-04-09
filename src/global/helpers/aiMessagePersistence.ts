@@ -1,6 +1,6 @@
 import type { ApiMessage } from '../../api/types';
-import type { RequiredGlobalState } from '../types';
 import type { ThreadId } from '../../types';
+import type { RequiredGlobalState } from '../types';
 import type { MessageFetchQuery, MessageFetchResult, TimeRange } from '../types/tabState';
 
 type PersistFetchedMessagesArgs = {
@@ -109,9 +109,10 @@ export function persistFetchedMessages({
       };
     }
   }
-  setGlobal(nextGlobal);
+  const global = nextGlobal;
+  setGlobal(global);
   forceUpdateCache();
-  return nextGlobal;
+  return global;
 }
 
 export function persistFetchedRangeCoverage({
@@ -166,7 +167,8 @@ export function persistFetchedRangeCoverage({
     },
   };
 
-  setGlobal(nextGlobal);
+  const global = nextGlobal;
+  setGlobal(global);
   forceUpdateCache();
-  return nextGlobal;
+  return global;
 }

@@ -10,30 +10,29 @@ import { MAIN_THREAD_ID } from '../../../api/types';
 
 import { getCurrentTabId } from '../../../util/establishMultitabRole';
 import { getTranslationFn } from '../../../util/localization';
-import { callApi } from '../../../api/gramjs';
 import { forceUpdateCache, loadCachedGlobal } from '../../cache';
 import {
   buildAiConversationMessages,
   buildAiFinalAnswerSystemPrompt,
   buildAiFinalAnswerTaskPrompt,
-  buildPersistentAiHistoryMessages,
   buildAiSystemPrompt,
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
-  formatHistoryFetchFloodWaitProgress,
-  formatHistoryFetchToolResultForModel,
-  formatHistoryFetchPageProgress,
+  buildPersistentAiHistoryMessages,
   clampAiContextLimit,
   formatAiPromptConversationContextLines,
   formatAiPromptEvidenceLines,
   formatAiPromptToolOutputLines,
+  formatHistoryFetchFloodWaitProgress,
+  formatHistoryFetchPageProgress,
+  formatHistoryFetchToolResultForModel,
   getAiApiUrl,
   parseGeminiAssistantText,
   parseOpenAiAssistantText,
   pickRecentMessageIds,
+  sanitizeAssistantText,
   serializeOpenAiCompatibleMessages,
   shouldOfferHistoryFetchTool,
-  sanitizeAssistantText,
 } from '../../helpers/ai';
 import { persistFetchedMessages, persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence';
 import {
@@ -42,15 +41,15 @@ import {
 } from '../../helpers/aiSkills';
 export { buildHistoryFetchQueryFromToolHints } from '../../helpers/aiSkills';
 import {
-  type AiEvidenceItem,
-  type AiEvidenceSource,
-  dedupeAiEvidence,
-} from '../../helpers/aiOrchestrator';
-import {
   type AiChatMessage,
   type AiToolCall,
   resolveAiAgentConversation,
 } from '../../helpers/aiAgentRuntime';
+import {
+  type AiEvidenceItem,
+  type AiEvidenceSource,
+  dedupeAiEvidence,
+} from '../../helpers/aiOrchestrator';
 import { readAiProviderStream } from '../../helpers/aiProviderStream';
 import aiRunController from '../../helpers/aiRunController';
 import {
@@ -60,7 +59,6 @@ import {
   resetAiAssistantState,
 } from '../../helpers/aiRunState';
 import { type AiThinkingLog, createAiThinkingTraceStep } from '../../helpers/aiThinking';
-import { getIsSavedDialog } from '../../helpers/chats';
 import {
   describeMessageFetchQuery,
   runMessageFetch,
@@ -76,7 +74,6 @@ import {
 import { addMessages } from '../../reducers/messages';
 import { updateTabState } from '../../reducers/tabs';
 import {
-  selectChat,
   selectChatMessages,
   selectCurrentMessageList,
   selectSender,
@@ -147,7 +144,7 @@ function updateAiState(
   global: Parameters<typeof updateTabState>[0],
   tabId: number,
   update: Partial<ReturnType<typeof selectTabState>['aiAssistant']>,
-) {
+): RequiredGlobalState {
   const tabState = selectTabState(global, tabId);
   const aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
 
@@ -156,7 +153,7 @@ function updateAiState(
       ...aiAssistant,
       ...update,
     },
-  }, tabId);
+  }, tabId) as RequiredGlobalState;
 }
 
 function applyAiStreamEventForTab(tabId: number, event: AiStreamEvent) {
@@ -340,44 +337,6 @@ function toHistoryEvidenceItems(result: MessageFetchResult): AiEvidenceItem[] {
     source: 'history',
     date: message.date,
   }));
-}
-
-async function fetchOlderEvidenceFromApi(
-  baseGlobal: GlobalState,
-  chatId: string,
-  threadId: number | string,
-  beforeMessageId: number | undefined,
-  batchSize: number,
-): Promise<AiEvidenceItem[]> {
-  const currentUserId = baseGlobal.currentUserId;
-  const isSavedDialog = getIsSavedDialog(chatId, threadId, currentUserId);
-  const realChatId = isSavedDialog ? String(threadId) : chatId;
-  const chat = selectChat(baseGlobal, realChatId);
-
-  if (!chat) {
-    return [];
-  }
-
-  const result = await callApi('fetchMessages', {
-    chat,
-    offsetId: beforeMessageId,
-    addOffset: beforeMessageId ? 0 : undefined,
-    limit: batchSize,
-    threadId,
-    isSavedDialog,
-  });
-
-  if (!result?.messages?.length) {
-    return [];
-  }
-
-  let global = getGlobal();
-  global = addMessages(global, result.messages);
-  setGlobal(global);
-
-  return result.messages
-    .map((message) => buildEvidenceItem(global, message, 'history'))
-    .filter((item): item is AiEvidenceItem => Boolean(item));
 }
 
 function isAbortError(error: unknown) {
@@ -929,7 +888,12 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       currentPrompt: trimmedPrompt,
     });
 
-    const commitFinalAnswer = (finalText: string, historyMessageSource: AiChatMessage[], actualUsedCount: number, committedAt = Date.now()) => {
+    const commitFinalAnswer = (
+      finalText: string,
+      historyMessageSource: AiChatMessage[],
+      actualUsedCount: number,
+      committedAt = Date.now(),
+    ) => {
       actions.setAiThinkingEndedAt({ thinkingEndedAt: committedAt, tabId });
       global = getGlobal();
       actions.appendAiTurn({
@@ -938,10 +902,10 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
         tabId,
         thinkingLog: buildThinkingLog(selectTabState(global, tabId).aiAssistant),
       });
-      const updatedGlobal = updateAiState(getGlobal(), tabId, {
+      global = updateAiState(global, tabId, {
         historyMessages: buildPersistentAiHistoryMessages(historyMessageSource, finalText),
       });
-      setGlobal(updatedGlobal);
+      setGlobal(global);
       actions.setAiActualUsedCount({ actualUsedCount, tabId });
     };
 
@@ -1000,7 +964,10 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
           return;
         }
 
-        throw new Error('AI returned no visible answer. The final-answer phase attempted to continue retrieval instead of answering.');
+        throw new Error(
+          'AI returned no visible answer.'
+          + ' The final-answer phase attempted to continue retrieval instead of answering.',
+        );
       }
     };
 
@@ -1048,8 +1015,11 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             }
           })();
 
-          const resolvedQuery = resolveHistoryFetchToolArgs(parsedArgs, Math.min(100, Math.max(aiAssistant.contextLimit, 20)));
-          const query = resolvedQuery as MessageFetchQuery | undefined;
+          const resolvedQuery = resolveHistoryFetchToolArgs(
+            parsedArgs,
+            Math.min(100, Math.max(aiAssistant.contextLimit, 20)),
+          );
+          const query = resolvedQuery;
 
           if (!query) {
             throw new Error('Invalid history-fetch tool arguments');
@@ -1138,7 +1108,8 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             createdAt: Date.now(),
           };
           collectedToolOutputs = [...collectedToolOutputs, toolOutput].slice(-12);
-          global = appendAiToolOutput(getGlobal(), tabId, toolOutput);
+          global = getGlobal();
+          global = appendAiToolOutput(global, tabId, toolOutput);
           setGlobal(global);
 
           return {

@@ -12,13 +12,13 @@ import { isLocalMessageId } from '../util/keys/messageKey';
 import { Bundles, loadBundle } from '../util/moduleLoader';
 import { parseLocationHash } from '../util/routing';
 import { updatePeerColors } from '../util/theme';
+import { runMessageFetch } from './helpers/messageFetch';
 import { initializeChatMediaSearchResults } from './reducers/middleSearch';
 import { updateTabState } from './reducers/tabs';
 import { replaceTabThreadParam, replaceThreadLocalStateParam } from './reducers/threads';
 import { selectThreadLocalStateParam } from './selectors/threads';
 import { initSharedState } from './shared/sharedStateConnector';
 import { initCache } from './cache';
-import { runMessageFetch } from './helpers/messageFetch';
 import {
   addActionHandler, getGlobal, setGlobal,
 } from './index';
@@ -38,34 +38,45 @@ addActionHandler('init', (global, actions, payload): ActionReturnType => {
   const { tabId = getCurrentTabId(), isMasterTab } = payload || {};
 
   if (DEBUG && typeof window !== 'undefined') {
-    (window as any).TEST_requestAiMessageFetch = (actionPayload: Parameters<typeof actions.requestAiMessageFetch>[0]) => {
+    const debugWindow = window as any;
+
+    debugWindow.TEST_requestAiMessageFetch = (
+      actionPayload: Parameters<typeof actions.requestAiMessageFetch>[0],
+    ) => {
       return actions.requestAiMessageFetch({
         ...actionPayload,
         tabId: actionPayload?.tabId ?? getCurrentTabId(),
       });
     };
-    (window as any).TEST_runMessageFetch = async (actionPayload: { query: Parameters<typeof runMessageFetch>[1]; tabId?: number }) => {
+
+    debugWindow.TEST_runMessageFetch = (actionPayload: {
+      query: Parameters<typeof runMessageFetch>[1];
+      tabId?: number;
+    }) => {
       const tabIdToUse = actionPayload?.tabId ?? getCurrentTabId();
-      return runMessageFetch(getGlobal(), actionPayload.query, tabIdToUse);
-    };
-    (window as any).TEST_getCurrentTabId = getCurrentTabId;
-    (window as any).TEST_getCurrentMessageList = (tabId?: number) => {
       const globalState = getGlobal();
-      return selectCurrentMessageList(globalState, tabId ?? getCurrentTabId());
+      return runMessageFetch(globalState, actionPayload.query, tabIdToUse);
     };
-    (window as any).TEST_openChatByTitle = async (title: string, tabId?: number) => {
+
+    debugWindow.TEST_getCurrentTabId = getCurrentTabId;
+    debugWindow.TEST_getCurrentMessageList = (localTabId?: number) => {
+      const globalState = getGlobal();
+      return selectCurrentMessageList(globalState, localTabId ?? getCurrentTabId());
+    };
+
+    debugWindow.TEST_openChatByTitle = (title: string, localTabId?: number) => {
       const normalizedTitle = title.trim().toLowerCase();
       const globalState = getGlobal();
-      const chat = Object.keys(globalState.messages.byChatId).map((chatId) => selectChat(globalState, chatId)).find((candidate) => (
-        candidate?.title?.trim().toLowerCase() === normalizedTitle
-      ));
+      const chat = Object.keys(globalState.messages.byChatId)
+        .map((chatId) => selectChat(globalState, chatId))
+        .find((candidate) => candidate?.title?.trim().toLowerCase() === normalizedTitle);
 
       if (!chat) {
         throw new Error(`Chat not found by title: ${title}`);
       }
 
-      const targetTabId = tabId ?? getCurrentTabId();
-      await actions.openChat({ id: chat.id, tabId: targetTabId });
+      const targetTabId = localTabId ?? getCurrentTabId();
+      actions.openChat({ id: chat.id, tabId: targetTabId });
       return chat.id;
     };
   }
