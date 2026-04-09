@@ -23,6 +23,7 @@ import {
 } from '../../helpers/chatSync';
 import {
   addActionHandler,
+  execAfterActions,
   getGlobal,
   setGlobal,
 } from '../../index';
@@ -220,6 +221,9 @@ addActionHandler('setChatSyncMethod', (global, _actions, payload): ActionReturnT
 });
 
 addActionHandler('setChatSyncTimeRange', (global, actions, payload): ActionReturnType => {
+  const threadId = resolveSyncThreadId(undefined);
+  const existing = getChatSyncState(global, payload.chatId);
+
   const resolvedGlobal = updateChatSyncState(global, payload.chatId, {
     selectedTimeRange: payload.timeRange,
     cursorMessageId: undefined,
@@ -227,13 +231,14 @@ addActionHandler('setChatSyncTimeRange', (global, actions, payload): ActionRetur
     updatedAt: Date.now(),
   });
 
-  const existing = getChatSyncState(global, payload.chatId);
-  const threadId = resolveSyncThreadId(undefined);
   if (existing.status === 'syncing') {
     actions.pauseChatSync({ chatId: payload.chatId, threadId });
   }
 
-  void loadChatSyncStatsInternal(payload.chatId, threadId);
+  // Defer follow-up stats refresh to avoid setting outdated global within the same action cycle.
+  execAfterActions(() => {
+    actions.loadChatSyncStats({ chatId: payload.chatId, threadId });
+  });
 
   return resolvedGlobal;
 });
@@ -253,7 +258,7 @@ addActionHandler('pauseChatSync', (global, _actions, payload): ActionReturnType 
   });
 });
 
-addActionHandler('resetChatSync', (global, _actions, payload): ActionReturnType => {
+addActionHandler('resetChatSync', (global, actions, payload): ActionReturnType => {
   const resolvedThreadId = resolveSyncThreadId(payload.threadId);
   runningSyncKeys.delete(getSyncKey(payload.chatId, resolvedThreadId));
   void callApi('abortChatRequests', {
@@ -269,7 +274,11 @@ addActionHandler('resetChatSync', (global, _actions, payload): ActionReturnType 
     updatedAt: Date.now(),
   });
 
-  void loadChatSyncStatsInternal(payload.chatId, resolvedThreadId);
+  // Defer stats refresh to keep state writes ordered within TeactN action processing.
+  execAfterActions(() => {
+    actions.loadChatSyncStats({ chatId: payload.chatId, threadId: resolvedThreadId });
+  });
+
   return nextGlobal;
 });
 
