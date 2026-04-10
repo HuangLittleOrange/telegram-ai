@@ -48,16 +48,6 @@ function subscribeToWorker() {
 if (IS_SERVICE_WORKER_SUPPORTED) {
   window.addEventListener('load', async () => {
     try {
-      if (DEBUG) {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(registrations.map((registration) => registration.unregister()));
-        if (DEBUG_MORE) {
-          // eslint-disable-next-line no-console
-          console.log('[SW] Disabled in development');
-        }
-        return;
-      }
-
       const controller = navigator.serviceWorker.controller;
       if (!controller || controller.scriptURL.includes(IGNORE_WORKER_PATH)) {
         const registrations = await navigator.serviceWorker.getRegistrations();

@@ -100,136 +100,8 @@ import type {
 import type { WebApp, WebAppModalStateType } from '../../types/webapp';
 import type { SearchResultKey } from '../../util/keys/searchResultKey';
 import type { RegularLangFnParameters } from '../../util/localization';
-import type {
-  AiThinkingLog,
-  AiThinkingTraceStep,
-} from '../helpers/aiThinking';
 import type { ProfileCollectionKey } from '../selectors/payments';
 import type { CallbackAction } from './actions';
-import type { AiStreamStage } from './aiStream';
-
-export type PersonRef = {
-  peerId: string;
-  title?: string;
-};
-
-export type TimeRange =
-  | {
-    mode: 'preset';
-    value: 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth';
-  }
-  | {
-    mode: 'custom';
-    startAt: number;
-    endAt: number;
-  };
-
-export type MessageFetchQuery =
-  | {
-    mode: 'person';
-    person: PersonRef;
-    timeRange?: TimeRange;
-    limit?: number;
-    beforeMessageId?: number;
-    remoteOnly?: boolean;
-  }
-  | {
-    mode: 'keyword';
-    keyword: string;
-    beforeMessageId?: number;
-    limit?: number;
-    person?: PersonRef;
-    timeRange?: TimeRange;
-    remoteOnly?: boolean;
-  }
-  | {
-    mode: 'range';
-    timeRange: TimeRange;
-    person?: PersonRef;
-    limit?: number;
-    beforeMessageId?: number;
-    remoteOnly?: boolean;
-  }
-  | {
-    mode: 'recent';
-    limit: number;
-    person?: PersonRef;
-    timeRange?: TimeRange;
-    beforeMessageId?: number;
-    remoteOnly?: boolean;
-  };
-
-export type MessageFetchResult = {
-  messages: Array<{
-    chatId: string;
-    threadId: number | string;
-    messageId: number;
-    sender: string;
-    date: number;
-    text: string;
-  }>;
-  total: number;
-  truncated: boolean;
-  evidenceIds: number[];
-  sourceMessages?: ApiMessage[];
-  nextBeforeMessageId?: number;
-  summary?: string;
-};
-
-export type ToolOutput =
-  | {
-    type: 'message.fetch';
-    query: MessageFetchQuery;
-    result: MessageFetchResult;
-    createdAt: number;
-  }
-  | {
-    type: string;
-    description?: string;
-    payload: unknown;
-    createdAt: number;
-  };
-
-export type AiAssistantStreamStatus = 'idle' | 'streaming' | 'cancelling' | 'cancelled' | 'error' | 'done';
-
-export type AiAssistantState = {
-  isOpen: boolean;
-  contextLimit: number;
-  actualUsedCount?: number;
-  isLoading?: boolean;
-  thinkingStage?: string;
-  thinkingStartedAt?: number;
-  thinkingEndedAt?: number;
-  thinkingTrace: AiThinkingTraceStep[];
-  error?: string;
-  turns: {
-    role: 'user' | 'assistant';
-    text: string;
-    createdAt: number;
-    thinkingLog?: AiThinkingLog;
-  }[];
-  historyMessages?: {
-    role: 'system' | 'user' | 'assistant' | 'tool';
-    content: string;
-    name?: string;
-    tool_call_id?: string;
-    tool_calls?: {
-      id: string;
-      type: 'function';
-      function: {
-        name: string;
-        arguments: string;
-      };
-    }[];
-  }[];
-  toolOutputs: ToolOutput[];
-  toolOutputHistory?: ToolOutput[];
-  runId?: string;
-  streamStatus?: AiAssistantStreamStatus;
-  activeStage?: AiStreamStage;
-  draftText?: string;
-  finalText?: string;
-};
 
 export type PollVote = {
   peerId: string;
@@ -270,7 +142,6 @@ export type TabState = {
     forceScrollProfileTab?: boolean;
     isOwnProfile?: boolean;
   };
-  aiAssistant: AiAssistantState;
   nextFoldersAction?: ReducerAction<FoldersActions>;
   shareFolderScreen?: {
     folderId: number;

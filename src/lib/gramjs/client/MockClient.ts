@@ -133,10 +133,7 @@ class TelegramClient {
       const peerId = getIdFromInputPeer(request.peer);
       if (!peerId) return undefined;
 
-      const messages = this.mockData.messages[peerId]
-        .filter((message) => message.replyToTopId === request.msgId)
-        .sort((left, right) => right.id - left.id)
-        .filter((message) => !request.offsetId || message.id < request.offsetId);
+      const messages = this.mockData.messages[peerId].filter((message) => message.replyToTopId === request.msgId);
       return new Api.messages.Messages({
         messages: messages.map((message) => createMockedMessage(peerId, message.id, this.mockData)),
         chats: [],
@@ -219,13 +216,8 @@ class TelegramClient {
       const peerId = getIdFromInputPeer(request.peer);
       if (!peerId) return undefined;
 
-      const messages = this.mockData.messages[peerId]
-        .slice()
-        .sort((left, right) => right.id - left.id)
-        .filter((message) => !request.offsetId || message.id < request.offsetId);
-
       return new Api.messages.Messages({
-        messages: messages.map((message) => createMockedMessage(peerId, message.id, this.mockData)),
+        messages: this.getMessagesFrom(peerId),
         chats: [],
         users: [],
         topics: [],

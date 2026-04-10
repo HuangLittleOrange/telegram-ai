@@ -112,7 +112,7 @@ export type PerformanceTypeKey = (
   'pageTransitions' | 'messageSendingAnimations' | 'mediaViewerAnimations'
   | 'messageComposerAnimations' | 'contextMenuAnimations' | 'contextMenuBlur' | 'messageBlur'
   | 'rightColumnAnimations' | 'animatedEmoji' | 'loopAnimatedStickers' | 'reactionEffects' | 'stickerEffects'
-  | 'autoplayGifs' | 'autoplayVideos' | 'storyRibbonAnimations' | 'snapEffect'
+  | 'autoplayGifs' | 'autoplayVideos' | 'storyRibbonAnimations' | 'snapEffect' | 'textStreaming'
 );
 export type PerformanceType = Record<PerformanceTypeKey, boolean>;
 
@@ -165,17 +165,6 @@ export interface AccountSettings {
   translationLanguage?: string;
   doNotTranslate: string[];
   shouldPaidMessageAutoApprove: boolean;
-  aiSettings: AiSettings;
-}
-
-export type AiProvider = 'openai' | 'gemini';
-
-export interface AiSettings {
-  provider: AiProvider;
-  model: string;
-  apiKey?: string;
-  baseUrl?: string;
-  defaultContextLimit: number;
 }
 
 export type IAnchorPosition = {
@@ -278,7 +267,6 @@ export enum SettingsScreens {
   PasscodeCongratulations,
   Experimental,
   Stickers,
-  Ai,
   QuickReaction,
   CustomEmoji,
   DoNotTranslate,
@@ -317,7 +305,6 @@ export enum GlobalSearchContent {
 
 export enum RightColumnContent {
   ChatInfo,
-  AiAssistant,
   Management,
   Statistics,
   BoostStatistics,
@@ -642,11 +629,6 @@ export interface ThreadLocalState {
   lastScrollOffset?: number;
   lastViewportIds?: number[];
   listedIds?: number[];
-  fetchedMessageRangeCoverages?: Array<{
-    startAt: number;
-    endAt: number;
-    completedAt: number;
-  }>;
   outlyingLists?: number[][];
   pinnedIds?: number[];
   scheduledIds?: number[];

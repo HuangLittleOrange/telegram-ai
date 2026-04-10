@@ -5,11 +5,9 @@ node_modules
 src/lib/gramjs/build/
 build-contest/
 tests/
-.worktrees/
 .idea
 *.iml
 dev/perf/screenshot*
 .DS_store
 .github/workflows/*
 !.github/workflows/package-and-publish.yml
-dist/

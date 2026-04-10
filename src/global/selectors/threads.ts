@@ -42,7 +42,7 @@ export function selectThread<T extends GlobalState>(
   threadId: ThreadId,
 ) {
   const messageInfo = global.messages.byChatId[chatId];
-  if (!messageInfo?.threadsById) {
+  if (!messageInfo) {
     return undefined;
   }
 

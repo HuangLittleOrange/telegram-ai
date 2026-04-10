@@ -3,14 +3,10 @@ import type { ApiUpdate, OnApiUpdate } from '../../types';
 import { API_THROTTLE_RESET_UPDATES, API_UPDATE_THROTTLE } from '../../../config';
 import { throttle, throttleWithTickEnd } from '../../../util/schedulers';
 
-let onUpdate: OnApiUpdate | undefined;
+let onUpdate: OnApiUpdate;
 
 export function init(_onUpdate: OnApiUpdate) {
   onUpdate = _onUpdate;
-
-  if (pendingUpdates?.length && currentThrottleId !== undefined) {
-    flushUpdates(currentThrottleId);
-  }
 }
 
 export function sendApiUpdate(update: ApiUpdate) {
@@ -18,12 +14,7 @@ export function sendApiUpdate(update: ApiUpdate) {
 }
 
 export function sendImmediateApiUpdate(update: ApiUpdate) {
-  if (onUpdate) {
-    onUpdate(update);
-    return;
-  }
-
-  queueUpdate(update);
+  onUpdate(update);
 }
 
 const flushUpdatesOnTickEnd = throttleWithTickEnd(flushUpdates);
@@ -50,10 +41,6 @@ function queueUpdate(update: ApiUpdate) {
 
 function flushUpdates(throttleId: number) {
   if (!pendingUpdates || throttleId !== currentThrottleId) {
-    return;
-  }
-
-  if (!onUpdate) {
     return;
   }
 

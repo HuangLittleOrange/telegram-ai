@@ -296,26 +296,6 @@ export async function invokeRequest<T extends GramJs.AnyRequest>(
   }
 
   try {
-    if (!client) {
-      const error = new Error('Telegram client is not initialized');
-      if (shouldIgnoreErrors) return undefined;
-
-      if (DEBUG) {
-        log('INVOKE ERROR', request.className);
-        // eslint-disable-next-line no-console
-        console.debug('invokeRequest failed before client init with payload', request);
-        // eslint-disable-next-line no-console
-        console.error(error);
-      }
-
-      if (shouldThrow) {
-        throw error;
-      }
-
-      dispatchErrorUpdate(error, request);
-      return undefined;
-    }
-
     if (DEBUG) {
       log('INVOKE', request.className);
     }

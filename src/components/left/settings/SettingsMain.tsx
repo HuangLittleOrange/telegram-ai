@@ -37,8 +37,6 @@ type StateProps = {
   isGiveawayAvailable?: boolean;
   starsBalance?: ApiStarsAmount;
   tonBalance?: ApiTonAmount;
-  aiProvider?: string;
-  aiModel?: string;
 };
 
 const SettingsMain: FC<OwnProps & StateProps> = ({
@@ -49,8 +47,6 @@ const SettingsMain: FC<OwnProps & StateProps> = ({
   isGiveawayAvailable,
   starsBalance,
   tonBalance,
-  aiProvider,
-  aiModel,
   onReset,
 }) => {
   const {
@@ -175,19 +171,6 @@ const SettingsMain: FC<OwnProps & StateProps> = ({
         >
           {lang('MenuStickers')}
         </ListItem>
-        <ListItem
-          icon="bots"
-          narrow
-
-          onClick={() => openSettingsScreen({ screen: SettingsScreens.Ai })}
-        >
-          AI Settings
-          {(aiProvider || aiModel) && (
-            <span className="settings-item__current-value">
-              {`${aiProvider || ''}${aiModel ? ` · ${aiModel}` : ''}`}
-            </span>
-          )}
-        </ListItem>
       </div>
       <div className="settings-main-menu">
         {canBuyPremium && (
@@ -279,8 +262,6 @@ export default memo(withGlobal<OwnProps>(
     const isGiveawayAvailable = selectIsGiveawayGiftsPurchaseAvailable(global);
     const starsBalance = global.stars?.balance;
     const tonBalance = global.ton?.balance;
-    const aiProvider = global.settings.byKey.aiSettings.provider;
-    const aiModel = global.settings.byKey.aiSettings.model;
 
     return {
       sessionCount: global.activeSessions.orderedHashes.length,
@@ -289,8 +270,6 @@ export default memo(withGlobal<OwnProps>(
       isGiveawayAvailable,
       starsBalance,
       tonBalance,
-      aiProvider,
-      aiModel,
     };
   },
 )(SettingsMain));

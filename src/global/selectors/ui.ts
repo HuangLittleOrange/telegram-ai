@@ -39,8 +39,6 @@ export function selectRightColumnContentKey<T extends GlobalState>(
     RightColumnContent.EditTopic
   ) : tabState.createTopicPanel ? (
     RightColumnContent.CreateTopic
-  ) : tabState.aiAssistant?.isOpen ? (
-    RightColumnContent.AiAssistant
   ) : tabState.pollResults.messageId ? (
     RightColumnContent.PollResults
   ) : selectCurrentManagement(global, tabId) ? (

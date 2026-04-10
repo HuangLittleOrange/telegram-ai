@@ -19,7 +19,6 @@ import SettingsPasscode from './passcode/SettingsPasscode';
 import PrivacyMessages from './PrivacyMessages';
 import SettingsActiveSessions from './SettingsActiveSessions';
 import SettingsActiveWebsites from './SettingsActiveWebsites';
-import SettingsAi from './SettingsAi';
 import SettingsCustomEmoji from './SettingsCustomEmoji';
 import SettingsDataStorage from './SettingsDataStorage';
 import SettingsDoNotTranslate from './SettingsDoNotTranslate';
@@ -304,10 +303,6 @@ const Settings: FC<OwnProps> = ({
       case SettingsScreens.Stickers:
         return (
           <SettingsStickers isActive={isScreenActive} onReset={handleReset} />
-        );
-      case SettingsScreens.Ai:
-        return (
-          <SettingsAi isActive={isScreenActive} onReset={handleReset} />
         );
       case SettingsScreens.Experimental:
         return (
