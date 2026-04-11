@@ -22,17 +22,19 @@ export type AiSkillInvocation =
 
 export const AI_SKILL_GUIDANCE = [
   '可用技能/工具：`history-fetch`。',
-  '用途：从当前聊天中按人、按关键词、按时间范围或最近 N 条获取消息，用来补充上下文。',
+  '用途：从当前聊天的本地已同步消息中按人、按关键词、按时间范围获取消息，用来补充上下文。',
+  '限制：不会触发远程拉取，只读取本地已同步数据。',
+  '未显式指定对象时，默认读取当前聊天，不是全局所有对话。',
   '时间范围优先使用结构化的 `timeRange` 对象。',
-  '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，'
-  + '优先用 `timeRange: { "mode": "preset", "value": "lastWeek" | "thisWeek" | "thisMonth" | "today" | "yesterday" }`。',
-  '只有用户明确给出具体日期时，'
-  + '才用 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
+  '当用户使用 `上周`、`本周`、`本月`、`昨天`、`今天` 这类模糊时间时，先基于当前时间准确换算，再传 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
+  '其中 `上周`、`本周` 按自然周（周一到周日）理解。',
+  '不要传 `preset`；统一使用 `fromDate` 和 `toDate`。',
   '调用前先明确你缺什么信息，再为工具准备结构化查询参数。',
   '不要根据用户问题里的字面词做路由判断；历史查询只通过 `toolArgs` 和结构化的 `toolQueryHints` 传递。',
   '尽量把参数写进 `toolArgs`，并保留 `toolQueryHints` 作为补充线索。',
   '如果任务是在找某个名字、称呼、术语或提法，优先在 `toolQueryHints` 里提供 `keyword`。',
-  '如果一次结果被截断，继续用更早的 `beforeMessageId` 补历史，直到信息足够或者没有更早消息。',
+  '如果用户要的是一整段时间的话题概览，而范围检索只拿到很少几条消息，要先说明当前聊天本地同步不足，不要把零散消息概括成整段时间的话题。',
+  '如果结果不足，优先提示用户先补齐同步范围，而不是假设远程历史可用。',
 ].join(' ');
 
 export function buildAiSkillGuidance() {
@@ -44,13 +46,13 @@ export function buildHistoryFetchToolDefinition() {
     type: 'function' as const,
     function: {
       name: 'history-fetch',
-      description: 'Fetch Telegram chat history by person, keyword, time range, or recent N messages.',
+      description: 'Fetch local synced Telegram chat history by person, keyword, or time range.',
       parameters: {
         type: 'object',
         properties: {
           mode: {
             type: 'string',
-            enum: ['person', 'keyword', 'range', 'recent'],
+            enum: ['person', 'keyword', 'range'],
           },
           person: {
             type: 'object',
@@ -65,14 +67,6 @@ export function buildHistoryFetchToolDefinition() {
           timeRange: {
             type: 'object',
             properties: {
-              mode: {
-                type: 'string',
-                description: 'Use "preset" for relative ranges like lastWeek/thisMonth.',
-              },
-              value: {
-                type: 'string',
-                description: 'Preset values: today, yesterday, thisWeek, lastWeek, thisMonth.',
-              },
               fromDate: {
                 type: 'string',
                 description: 'ISO date string in YYYY-MM-DD format.',
@@ -176,6 +170,111 @@ function normalizeHistoryFetchKeywordHint(value: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function hasExplicitDateExpression(prompt: string) {
+  return /(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?|\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?|\d{1,2}月\d{1,2}日)/.test(prompt);
+}
+
+function startOfDay(timestamp: number) {
+  const date = new Date(timestamp);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function startOfWeekMonday(timestamp: number) {
+  const date = new Date(timestamp);
+  const day = date.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + diffToMonday).getTime();
+}
+
+function startOfMonth(timestamp: number) {
+  const date = new Date(timestamp);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function resolveRelativeTimeRangeFromPrompt(
+  userPrompt: string,
+  now = Date.now(),
+): TimeRange | undefined {
+  const normalizedPrompt = userPrompt.trim();
+  if (!normalizedPrompt || hasExplicitDateExpression(normalizedPrompt)) {
+    return undefined;
+  }
+
+  const todayStart = startOfDay(now);
+  const currentWeekStart = startOfWeekMonday(now);
+
+  if (normalizedPrompt.includes('上周')) {
+    const previousWeekStart = currentWeekStart - (7 * 24 * 60 * 60 * 1000);
+    return {
+      mode: 'custom',
+      startAt: previousWeekStart,
+      endAt: currentWeekStart,
+    };
+  }
+
+  if (normalizedPrompt.includes('本周')) {
+    return {
+      mode: 'custom',
+      startAt: currentWeekStart,
+      endAt: now,
+    };
+  }
+
+  if (normalizedPrompt.includes('本月')) {
+    return {
+      mode: 'custom',
+      startAt: startOfMonth(now),
+      endAt: now,
+    };
+  }
+
+  if (normalizedPrompt.includes('昨天')) {
+    return {
+      mode: 'custom',
+      startAt: todayStart - (24 * 60 * 60 * 1000),
+      endAt: todayStart,
+    };
+  }
+
+  if (normalizedPrompt.includes('今天')) {
+    return {
+      mode: 'custom',
+      startAt: todayStart,
+      endAt: now,
+    };
+  }
+
+  return undefined;
+}
+
+export function applyRelativeTimeRangeOverrideFromPrompt(args: {
+  query: MessageFetchQuery;
+  userPrompt: string;
+  now?: number;
+}): MessageFetchQuery {
+  const { query, userPrompt, now } = args;
+  const timeRange = resolveRelativeTimeRangeFromPrompt(userPrompt, now);
+  if (!timeRange) {
+    return query;
+  }
+
+  if (query.mode === 'range') {
+    return {
+      ...query,
+      timeRange,
+    };
+  }
+
+  if (query.mode === 'keyword' || query.mode === 'person') {
+    return {
+      ...query,
+      timeRange,
+    };
+  }
+
+  return query;
 }
 
 function normalizeHistoryFetchPersonHint(value: unknown): PersonRef | undefined {
@@ -323,11 +422,6 @@ function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefin
   }
 
   const candidate = value as Record<string, unknown>;
-  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
-  if (candidate.mode === 'preset' && preset) {
-    return preset;
-  }
-
   const startAt = normalizeTimeValue(
     candidate.startAt ?? candidate.start ?? candidate.from ?? candidate.startTime ?? candidate.fromDate,
   );
@@ -359,6 +453,11 @@ function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefin
       startAt,
       endAt: startAt + durationMs,
     };
+  }
+
+  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
+  if (candidate.mode === 'preset' && preset) {
+    return preset;
   }
 
   const days = Number(candidate.days ?? candidate.dayCount);
@@ -431,14 +530,6 @@ function normalizeHistoryFetchQueryHint(
     Number(candidate.limit ?? candidate.count ?? candidate.maxResults),
     fallbackLimit,
   );
-  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim().toLowerCase() : undefined;
-
-  if (mode === 'recent') {
-    return {
-      mode: 'recent' as const,
-      limit,
-    };
-  }
 
   if (keyword || person || timeRange) {
     return {
@@ -457,7 +548,6 @@ type NormalizedHistoryFetchQueryHint = {
   person?: PersonRef;
   timeRange?: TimeRange;
   limit?: number;
-  mode?: 'recent';
 };
 
 function buildHistoryFetchQueryFromNormalizedHint(
@@ -488,13 +578,6 @@ function buildHistoryFetchQueryFromNormalizedHint(
       mode: 'range' as const,
       timeRange: normalized.timeRange,
       ...(normalized.limit ? { limit: normalized.limit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-    };
-  }
-
-  if ('mode' in normalized && normalized.mode === 'recent') {
-    return {
-      mode: 'recent' as const,
-      limit: normalized.limit || clampMessageFetchLimit(undefined, defaultLimit),
     };
   }
 
@@ -549,7 +632,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
   let keywordQuery: NormalizedHistoryFetchQueryHint | undefined;
   let personQuery: PersonRef | undefined;
   let timeRangeQuery: TimeRange | undefined;
-  let recentLimit: number | undefined;
+  let queryLimit: number | undefined;
 
   for (const hint of hints) {
     const normalized = normalizeHistoryFetchQueryHint(hint, defaultLimit);
@@ -575,12 +658,8 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       timeRangeQuery = normalized.timeRange;
     }
 
-    if ('mode' in normalized && normalized.mode === 'recent') {
-      recentLimit = normalized.limit;
-    }
-
     if ('limit' in normalized && normalized.limit) {
-      recentLimit = normalized.limit;
+      queryLimit = normalized.limit;
     }
   }
 
@@ -599,7 +678,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       mode: 'person',
       person: personQuery,
       ...(timeRangeQuery ? { timeRange: timeRangeQuery } : {}),
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
     };
   }
 
@@ -607,14 +686,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
     return {
       mode: 'range',
       timeRange: timeRangeQuery,
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-    };
-  }
-
-  if (recentLimit) {
-    return {
-      mode: 'recent',
-      limit: recentLimit,
+      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
     };
   }
 

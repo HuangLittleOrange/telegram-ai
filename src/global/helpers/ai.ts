@@ -2,17 +2,13 @@ import type { AiProvider } from '../../types';
 import type {
   MessageFetchQuery,
   MessageFetchResult,
-  PersonRef,
-  TimeRange,
   ToolOutput,
 } from '../types/tabState';
-import type { AiChatMessage } from './aiAgentRuntime';
-import type {
-  AiJudgeDecision,
-  AiQueryPlan,
-} from './aiOrchestrator';
 
 import { sanitizeAssistantText } from './aiText';
+import {
+  formatHistoryFetchToolResultForModel,
+} from './aiToolRuntime';
 export {
   buildAiFinalAnswerSystemPrompt,
   buildAiRequestSystemPrompt,
@@ -23,12 +19,19 @@ export {
   sanitizeAssistantText,
 } from './aiText';
 export {
+  buildHistoryFetchQueryFromToolHints,
+} from './aiSkills';
+export {
   buildAiConversationMessages,
   buildPersistentAiHistoryMessages,
   resolveAiConversationTurnsForRequest,
   serializeOpenAiCompatibleMessages,
   type OpenAiCompatibleMessage,
 } from './aiTranscript';
+export {
+  formatHistoryFetchToolResultForModel,
+  shouldOfferHistoryFetchTool,
+} from './aiToolRuntime';
 
 export const AI_CONTEXT_LIMIT_MIN = 20;
 export const AI_CONTEXT_LIMIT_MAX = 500;
@@ -239,385 +242,6 @@ export function formatAiPromptToolOutputLines(
     });
 }
 
-const HISTORY_FETCH_LIMIT_MAX = 500;
-
-function clampMessageFetchLimit(limit: number | undefined, fallback: number) {
-  const normalizedFallback = Number.isFinite(fallback) && fallback > 0
-    ? Math.min(HISTORY_FETCH_LIMIT_MAX, Math.max(1, Math.floor(fallback)))
-    : 100;
-
-  if (!Number.isFinite(limit) || !limit || limit <= 0) {
-    return normalizedFallback;
-  }
-
-  return Math.min(HISTORY_FETCH_LIMIT_MAX, Math.max(1, Math.floor(limit)));
-}
-
-function normalizeHistoryFetchKeywordHint(value: unknown) {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    return trimmed;
-  }
-
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  for (const key of ['keyword', 'query', 'text', 'value']) {
-    const candidateValue = candidate[key];
-    if (typeof candidateValue === 'string' && candidateValue.trim()) {
-      return candidateValue.trim();
-    }
-  }
-
-  return undefined;
-}
-
-function normalizeHistoryFetchPersonHint(value: unknown): PersonRef | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-
-  const pickString = (values: unknown[]) => {
-    for (const item of values) {
-      if (typeof item === 'string' && item.trim()) {
-        return item.trim();
-      }
-    }
-
-    return undefined;
-  };
-  const candidate = value as Record<string, unknown>;
-  const peerId = pickString([
-    candidate.peerId,
-    candidate.userId,
-    candidate.id,
-    candidate.value,
-  ]);
-  const title = pickString([
-    candidate.title,
-    candidate.name,
-    candidate.username,
-    candidate.handle,
-  ]);
-
-  if (!peerId && !title) {
-    return undefined;
-  }
-
-  return {
-    peerId: peerId || title || '',
-    title: title || undefined,
-  };
-}
-
-function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefined {
-  type PresetTimeRangeValue = Extract<TimeRange, { mode: 'preset' }>['value'];
-
-  const normalizePreset = (
-    preset: unknown,
-  ): { mode: 'preset'; value: PresetTimeRangeValue } | undefined => {
-    if (
-      preset === 'today'
-      || preset === 'yesterday'
-      || preset === 'thisWeek'
-      || preset === 'lastWeek'
-      || preset === 'thisMonth'
-    ) {
-      return {
-        mode: 'preset' as const,
-        value: preset,
-      };
-    }
-    return undefined;
-  };
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-
-    const preset = normalizePreset(trimmed);
-    if (preset) {
-      return preset;
-    }
-
-    const relativeMatch = trimmed.match(/^(\d+)\s*(d|day|days|h|hour|hours)$/i);
-    if (relativeMatch) {
-      const amount = Number(relativeMatch[1]);
-      const unit = relativeMatch[2].toLowerCase();
-      const now = Date.now();
-      const durationMs = unit.startsWith('h')
-        ? amount * 60 * 60 * 1000
-        : amount * 24 * 60 * 60 * 1000;
-      return {
-        mode: 'custom',
-        startAt: Math.max(0, now - durationMs),
-        endAt: now,
-      };
-    }
-
-    return undefined;
-  }
-
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
-  if (candidate.mode === 'preset' && preset) {
-    return preset;
-  }
-
-  const startAt = Number(candidate.startAt ?? candidate.start ?? candidate.from);
-  const endAt = Number(candidate.endAt ?? candidate.end ?? candidate.to);
-  if (Number.isFinite(startAt) && Number.isFinite(endAt) && startAt >= 0 && endAt > startAt) {
-    return {
-      mode: 'custom',
-      startAt,
-      endAt,
-    };
-  }
-
-  const days = Number(candidate.days ?? candidate.dayCount);
-  if (Number.isFinite(days) && days > 0) {
-    const now = Date.now();
-    const durationMs = Math.floor(days) * 24 * 60 * 60 * 1000;
-    return {
-      mode: 'custom',
-      startAt: Math.max(0, now - durationMs),
-      endAt: now,
-    };
-  }
-
-  return undefined;
-}
-
-function normalizeHistoryFetchQueryHint(
-  hint: unknown,
-  fallbackLimit: number,
-): NormalizedHistoryFetchQueryHint | undefined {
-  if (typeof hint === 'string') {
-    const trimmed = hint.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        const normalized = normalizeHistoryFetchQueryHint(parsed, fallbackLimit);
-        if (normalized) {
-          return normalized;
-        }
-      } catch {
-        // structured hints only
-      }
-    }
-
-    return undefined;
-  }
-
-  if (!hint || typeof hint !== 'object') {
-    return undefined;
-  }
-
-  const candidate = hint as Record<string, unknown>;
-  const keyword = normalizeHistoryFetchKeywordHint(
-    candidate.keyword ?? candidate.query ?? candidate.text ?? candidate.value,
-  );
-  const person = normalizeHistoryFetchPersonHint(
-    candidate.person
-    ?? candidate.personRef
-    ?? candidate.persona
-    ?? candidate.user
-    ?? candidate.sender
-    ?? candidate.author,
-  );
-  const timeRange = normalizeHistoryFetchTimeRangeHint(
-    candidate.timeRange ?? candidate.range ?? candidate.dateRange ?? candidate.time,
-  );
-  const limit = clampMessageFetchLimit(
-    Number(candidate.limit ?? candidate.count ?? candidate.maxResults),
-    fallbackLimit,
-  );
-  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim().toLowerCase() : undefined;
-
-  if (mode === 'recent') {
-    return {
-      mode: 'recent' as const,
-      limit,
-    };
-  }
-
-  if (keyword || person || timeRange) {
-    return {
-      keyword,
-      person,
-      timeRange,
-      limit,
-    };
-  }
-
-  return undefined;
-}
-
-type NormalizedHistoryFetchQueryHint = {
-  keyword?: string;
-  person?: PersonRef;
-  timeRange?: TimeRange;
-  limit?: number;
-  mode?: 'recent';
-};
-
-export function buildHistoryFetchQueryFromToolHints(args: {
-  userPrompt: string;
-  plan: Pick<AiQueryPlan, 'nextAction' | 'toolName' | 'toolArgs' | 'toolQueryHints'>;
-  judge: Pick<AiJudgeDecision, 'nextAction' | 'toolName' | 'toolArgs' | 'toolQueryHints'>;
-  defaultLimit?: number;
-}): MessageFetchQuery | undefined {
-  const {
-    plan,
-    judge,
-    defaultLimit = 100,
-  } = args;
-
-  const explicitArgs = [
-    plan.toolArgs,
-    judge.toolArgs,
-  ];
-
-  for (const hint of explicitArgs) {
-    const normalized = normalizeHistoryFetchQueryHint(hint, defaultLimit);
-    if (!normalized) {
-      continue;
-    }
-
-    if ('keyword' in normalized && typeof normalized.keyword === 'string' && normalized.keyword.trim()) {
-      return {
-        mode: 'keyword',
-        keyword: normalized.keyword,
-        ...(normalized.person ? { person: normalized.person } : {}),
-        ...(normalized.timeRange ? { timeRange: normalized.timeRange } : {}),
-        limit: normalized.limit || clampMessageFetchLimit(undefined, defaultLimit),
-      };
-    }
-
-    if ('person' in normalized && normalized.person) {
-      return {
-        mode: 'person',
-        person: normalized.person,
-        ...(normalized.timeRange ? { timeRange: normalized.timeRange } : {}),
-        ...(normalized.limit
-          ? { limit: normalized.limit }
-          : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-      };
-    }
-
-    if ('timeRange' in normalized && normalized.timeRange) {
-      return {
-        mode: 'range',
-        timeRange: normalized.timeRange,
-        ...(normalized.limit
-          ? { limit: normalized.limit }
-          : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-      };
-    }
-
-    if ('mode' in normalized && normalized.mode === 'recent') {
-      return {
-        mode: 'recent',
-        limit: normalized.limit || clampMessageFetchLimit(undefined, defaultLimit),
-      };
-    }
-  }
-
-  const hints = [
-    ...(Array.isArray(plan.toolQueryHints) ? plan.toolQueryHints : []),
-    ...(Array.isArray(judge.toolQueryHints) ? judge.toolQueryHints : []),
-  ];
-
-  let keywordQuery: NormalizedHistoryFetchQueryHint | undefined;
-  let personQuery: PersonRef | undefined;
-  let timeRangeQuery: TimeRange | undefined;
-  let recentLimit: number | undefined;
-
-  for (const hint of hints) {
-    const normalized = normalizeHistoryFetchQueryHint(hint, defaultLimit);
-    if (!normalized) {
-      continue;
-    }
-
-    if ('keyword' in normalized && typeof normalized.keyword === 'string' && normalized.keyword.trim()) {
-      keywordQuery = {
-        keyword: normalized.keyword,
-        person: normalized.person,
-        timeRange: normalized.timeRange,
-        limit: normalized.limit,
-      };
-      continue;
-    }
-
-    if ('person' in normalized && normalized.person) {
-      personQuery = normalized.person;
-    }
-
-    if ('timeRange' in normalized && normalized.timeRange) {
-      timeRangeQuery = normalized.timeRange;
-    }
-
-    if ('mode' in normalized && normalized.mode === 'recent') {
-      recentLimit = normalized.limit;
-    }
-
-    if ('limit' in normalized && normalized.limit) {
-      recentLimit = normalized.limit;
-    }
-  }
-
-  if (keywordQuery?.keyword) {
-    return {
-      mode: 'keyword',
-      keyword: keywordQuery.keyword,
-      ...(keywordQuery.person ? { person: keywordQuery.person } : {}),
-      ...(keywordQuery.timeRange ? { timeRange: keywordQuery.timeRange } : {}),
-      limit: keywordQuery.limit || clampMessageFetchLimit(undefined, defaultLimit),
-    };
-  }
-
-  if (personQuery) {
-    return {
-      mode: 'person',
-      person: personQuery,
-      ...(timeRangeQuery ? { timeRange: timeRangeQuery } : {}),
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-    };
-  }
-
-  if (timeRangeQuery) {
-    return {
-      mode: 'range',
-      timeRange: timeRangeQuery,
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-    };
-  }
-
-  if (recentLimit) {
-    return {
-      mode: 'recent',
-      limit: recentLimit || clampMessageFetchLimit(undefined, defaultLimit),
-    };
-  }
-
-  return undefined;
-}
-
 export function buildAiPrompt(
   basePrompt: string,
   contextLines: string[],
@@ -733,34 +357,6 @@ export function formatRawMessageExport(
   });
 
   return [header, ...lines].join('\n');
-}
-
-export function formatHistoryFetchToolResultForModel(
-  query: MessageFetchQuery,
-  result: MessageFetchResult,
-) {
-  const messageLines = result.messages.map((message) => {
-    const timestamp = formatAiPromptTimestamp(message.date);
-    const text = message.text?.trim() || '（无文本）';
-    return `[${message.messageId} | ${timestamp}] ${message.sender}: ${text}`;
-  });
-
-  return [
-    '{',
-    `  "query": ${JSON.stringify(describeRawExportQuery(query))},`,
-    `  "summary": ${JSON.stringify(result.summary || '')},`,
-    `  "total": ${result.total},`,
-    `  "truncated": ${result.truncated ? 'true' : 'false'},`,
-    `  "messageCount": ${result.messages.length},`,
-    '  "messages": [',
-    ...messageLines.map((line, index) => `    ${JSON.stringify(line)}${index < messageLines.length - 1 ? ',' : ''}`),
-    '  ]',
-    '}',
-  ].join('\n');
-}
-
-export function shouldOfferHistoryFetchTool(messages: AiChatMessage[]) {
-  return !messages.some((message) => message.role === 'tool');
 }
 
 export function formatHistoryFetchPageProgress(

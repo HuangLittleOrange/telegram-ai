@@ -47,37 +47,7 @@ describe('ui ai action', () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'));
-      const isStreamRequest = Boolean(body.stream);
-      const content = body.tools?.length
-        ? '我先直接回答。'
-        : '最终答案：BitTensor 是一个去中心化的机器学习网络。';
-
-      if (isStreamRequest) {
-        return {
-          ok: true,
-          status: 200,
-          body: {
-            getReader: () => ({
-              read: async () => ({ done: true, value: undefined }),
-              cancel: async () => undefined,
-            }),
-          },
-          json: async () => ({
-            choices: [{
-              message: {
-                content,
-              },
-            }],
-          }),
-          text: async () => JSON.stringify({
-            choices: [{
-              message: {
-                content,
-              },
-            }],
-          }),
-        } as never;
-      }
+      const content = '最终答案：BitTensor 是一个去中心化的机器学习网络。';
 
       return {
         ok: true,
@@ -173,11 +143,10 @@ describe('ui ai action', () => {
         tabId: 1,
       });
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       const firstRequest = JSON.parse(String(fetchMock.mock.calls[0][1]?.body || '{}'));
-      const secondRequest = JSON.parse(String(fetchMock.mock.calls[1][1]?.body || '{}'));
       expect(firstRequest.tools).toBeDefined();
-      expect(secondRequest.tools).toBeUndefined();
+      expect(firstRequest.stream).toBe(false);
 
       expect(actions.appendAiTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({
         role: 'user',

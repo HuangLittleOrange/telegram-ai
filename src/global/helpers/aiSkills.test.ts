@@ -1,4 +1,5 @@
 import {
+  applyRelativeTimeRangeOverrideFromPrompt,
   buildAiSkillGuidance,
   buildHistoryFetchToolDefinition,
   resolveAiSkillInvocation,
@@ -12,8 +13,8 @@ describe('ai skill registry', () => {
     expect(guidance).toContain('history-fetch');
     expect(guidance).toContain('toolArgs');
     expect(guidance).toContain('toolQueryHints');
-    expect(guidance).toContain('"mode": "preset"');
-    expect(guidance).toContain('lastWeek');
+    expect(guidance).toContain('fromDate');
+    expect(guidance).toContain('toDate');
     expect(guidance).toContain('fromDate');
   });
 
@@ -25,22 +26,24 @@ describe('ai skill registry', () => {
       type: 'object',
       properties: expect.any(Object),
     }));
+    expect((tool.function.parameters as any).properties.mode.enum).toEqual(['person', 'keyword', 'range']);
+    expect(tool.function.description).not.toContain('recent');
   });
 
-  it('supports preset and custom range tool schema', () => {
+  it('only exposes explicit date range fields in the tool schema', () => {
     const tool = buildHistoryFetchToolDefinition();
     const timeRange = (tool.function.parameters as any).properties.timeRange;
 
     expect(timeRange).toEqual(expect.objectContaining({
       type: 'object',
       properties: expect.objectContaining({
-        mode: expect.objectContaining({ type: 'string' }),
-        value: expect.objectContaining({ type: 'string' }),
         fromDate: expect.objectContaining({ type: 'string' }),
         toDate: expect.objectContaining({ type: 'string' }),
       }),
       additionalProperties: false,
     }));
+    expect(timeRange.properties).not.toHaveProperty('mode');
+    expect(timeRange.properties).not.toHaveProperty('value');
   });
 
   it('keeps the top-level tool schema compatible with OpenAI function parameters', () => {
@@ -174,7 +177,7 @@ describe('ai skill registry', () => {
     });
   });
 
-  it('unwraps nested toolArgs into a history.fetch query', () => {
+  it('does not accept recent-only mode in nested toolArgs', () => {
     expect(resolveHistoryFetchToolArgs({
       toolArgs: {
         mode: 'recent',
@@ -185,22 +188,16 @@ describe('ai skill registry', () => {
           keyword: '官老师',
         },
       ],
-    }, 100)).toEqual({
-      mode: 'recent',
-      limit: 18,
-    });
+    }, 100)).toBeUndefined();
   });
 
-  it('parses stringified toolArgs into a history.fetch query', () => {
+  it('does not accept stringified recent-only toolArgs', () => {
     expect(resolveHistoryFetchToolArgs({
       toolArgs: JSON.stringify({
         mode: 'recent',
         limit: 18,
       }),
-    }, 100)).toEqual({
-      mode: 'recent',
-      limit: 18,
-    });
+    }, 100)).toBeUndefined();
   });
 
   it('parses stringified range timeRange payloads returned by model tool calls', () => {
@@ -283,6 +280,32 @@ describe('ai skill registry', () => {
       timeRange: {
         mode: 'preset',
         value: 'lastWeek',
+      },
+      limit: 100,
+    });
+  });
+
+  it('overrides fuzzy last-week ranges with the exact previous natural week', () => {
+    const query = applyRelativeTimeRangeOverrideFromPrompt({
+      query: {
+        mode: 'range',
+        timeRange: {
+          mode: 'custom',
+          startAt: new Date(2026, 3, 4).getTime(),
+          endAt: new Date(2026, 3, 10).getTime(),
+        },
+        limit: 100,
+      },
+      userPrompt: '上周聊了什么话题',
+      now: new Date(2026, 3, 10, 18, 36).getTime(),
+    });
+
+    expect(query).toEqual({
+      mode: 'range',
+      timeRange: {
+        mode: 'custom',
+        startAt: new Date(2026, 2, 30).getTime(),
+        endAt: new Date(2026, 3, 6).getTime(),
       },
       limit: 100,
     });

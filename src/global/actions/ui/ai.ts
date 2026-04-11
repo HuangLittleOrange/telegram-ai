@@ -2,7 +2,6 @@ import type { ApiMessage } from '../../../api/types';
 import type { ActionReturnType, GlobalState, RequiredGlobalState } from '../../types';
 import type { AiStreamEvent, AiStreamStage } from '../../types/aiStream';
 import type {
-  MessageFetchQuery,
   MessageFetchResult,
   ToolOutput,
 } from '../../types/tabState';
@@ -12,7 +11,6 @@ import { getCurrentTabId } from '../../../util/establishMultitabRole';
 import { getTranslationFn } from '../../../util/localization';
 import { forceUpdateCache, loadCachedGlobal } from '../../cache';
 import {
-  buildAiFinalAnswerTaskPrompt,
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
   clampAiContextLimit,
@@ -21,50 +19,47 @@ import {
   formatAiPromptToolOutputLines,
   formatHistoryFetchFloodWaitProgress,
   formatHistoryFetchPageProgress,
-  formatHistoryFetchToolResultForModel,
   getAiApiUrl,
   parseGeminiAssistantText,
   parseOpenAiAssistantText,
   pickRecentMessageIds,
   sanitizeAssistantText,
-  shouldOfferHistoryFetchTool,
 } from '../../helpers/ai';
 import {
-  buildAiFinalAnswerSystemPrompt,
   buildAiRequestSystemPrompt,
-  getAiPromptTimeContext,
 } from '../../helpers/aiContext';
 import { persistFetchedMessages, persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence';
 import {
   buildHistoryFetchToolDefinition,
-  resolveHistoryFetchToolArgs,
 } from '../../helpers/aiSkills';
 export { buildHistoryFetchQueryFromToolHints } from '../../helpers/aiSkills';
 import {
   type AiChatMessage,
   type AiToolCall,
-  resolveAiAgentConversation,
 } from '../../helpers/aiAgentRuntime';
+import {
+  type AiEvidenceItem,
+  type AiEvidenceSource,
+  dedupeAiEvidence,
+} from '../../helpers/aiOrchestrator';
+import { runAiQueryLoop } from '../../helpers/aiQueryLoop';
+import aiRunController from '../../helpers/aiRunController';
+import {
+  applyAiStreamEvent,
+  createEmptyAiAssistantState,
+  resetAiAssistantState,
+} from '../../helpers/aiRunState';
+import { type AiThinkingLog, createAiThinkingTraceStep } from '../../helpers/aiThinking';
+import {
+  executeHistoryFetchToolCall,
+  shouldOfferHistoryFetchTool,
+} from '../../helpers/aiToolRuntime';
 import {
   buildAiConversationMessages,
   buildPersistentAiHistoryMessages,
   resolveAiConversationTurnsForRequest,
   serializeOpenAiCompatibleMessages,
 } from '../../helpers/aiTranscript';
-import {
-  type AiEvidenceItem,
-  type AiEvidenceSource,
-  dedupeAiEvidence,
-} from '../../helpers/aiOrchestrator';
-import { readAiProviderStream } from '../../helpers/aiProviderStream';
-import aiRunController from '../../helpers/aiRunController';
-import {
-  applyAiStreamEvent,
-  createEmptyAiAssistantState,
-  getAiAssistantCommitText,
-  resetAiAssistantState,
-} from '../../helpers/aiRunState';
-import { type AiThinkingLog, createAiThinkingTraceStep } from '../../helpers/aiThinking';
 import {
   describeMessageFetchQuery,
   runMessageFetch,
@@ -115,9 +110,10 @@ type AiStreamEventInput = AiStreamEvent extends infer Event
 
 const EMPTY_AI_ASSISTANT_STATE = createEmptyAiAssistantState();
 
-function buildThinkingLog(aiAssistant: typeof EMPTY_AI_ASSISTANT_STATE & {
+function buildThinkingLog(aiAssistant: {
   thinkingStartedAt?: number;
   thinkingEndedAt?: number;
+  thinkingTrace?: AiThinkingLog['steps'];
 }): AiThinkingLog | undefined {
   if (!aiAssistant.thinkingStartedAt) {
     return undefined;
@@ -903,81 +899,19 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       actions.setAiActualUsedCount({ actualUsedCount, tabId });
     };
 
-    const streamFinalAnswer = async (args: {
-      historyMessageSource: AiChatMessage[];
-      toolOutputLines: string[];
-      actualUsedCount: number;
-    }) => {
-      const fullPrompt = buildAiFinalAnswerTaskPrompt(
-        trimmedPrompt,
-        contextEvidenceLines,
-        conversationContextLines,
-        args.toolOutputLines,
-      );
-      const streamReader = await requestAiCompletion(
-        provider,
-        model,
-        apiKey,
-        settings.baseUrl,
-        fullPrompt,
-        {
-          systemPrompt: buildAiFinalAnswerSystemPrompt(getAiPromptTimeContext()),
-          temperature: 0.3,
-          stream: true,
-          signal,
-        },
-      ) as ReadableStreamDefaultReader<Uint8Array>;
-
-      let assistantCommitted = false;
-      await readAiProviderStream({
-        runId,
-        signal,
-        reader: streamReader,
-        onEvent: (event) => {
-          if (!isRunActive()) {
-            return;
-          }
-
-          applyAiStreamEventForTab(tabId, event);
-          if (event.type === 'answer.final' && !assistantCommitted) {
-            const visibleFinalText = sanitizeAssistantText(event.text) || '';
-            if (visibleFinalText.trim()) {
-              assistantCommitted = true;
-              commitFinalAnswer(visibleFinalText, args.historyMessageSource, args.actualUsedCount, event.createdAt);
-            }
-          }
-        },
-      });
-
-      if (!assistantCommitted) {
-        global = getGlobal();
-        const aiAssistantState = selectTabState(global, tabId).aiAssistant;
-        const committedText = sanitizeAssistantText(getAiAssistantCommitText(aiAssistantState)) || '';
-        if (committedText.trim()) {
-          commitFinalAnswer(committedText, args.historyMessageSource, args.actualUsedCount);
-          return;
-        }
-
-        throw new Error(
-          'AI returned no visible answer.'
-          + ' The final-answer phase attempted to continue retrieval instead of answering.',
-        );
-      }
-    };
-
     let historyMessageSource = conversationMessages;
-    let finalToolOutputLines = toolOutputContextLines;
     let actualUsedCount = localEvidence.length;
+    let finalAnswerText: string | undefined;
     let fallbackFinalText: string | undefined;
 
     emitThinking('answer', '正在补充答案上下文', '必要时会继续检索历史消息');
 
     if (provider === 'openai') {
       let fetchedCount = 0;
-      let fallbackQuery: MessageFetchQuery | undefined;
-      let fallbackResult: MessageFetchResult | undefined;
+      let fallbackQuery;
+      let fallbackResult;
 
-      historyMessageSource = await resolveAiAgentConversation({
+      const loopResult = await runAiQueryLoop({
         messages: conversationMessages,
         complete: async (messages) => {
           const tools = shouldOfferHistoryFetchTool(messages)
@@ -1001,61 +935,52 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             throw new DOMException('The operation was aborted.', 'AbortError');
           }
 
-          const parsedArgs = (() => {
-            try {
-              return JSON.parse(toolCall.function.arguments);
-            } catch {
-              return undefined;
-            }
-          })();
-
-          const resolvedQuery = resolveHistoryFetchToolArgs(
-            parsedArgs,
-            Math.min(100, Math.max(aiAssistant.contextLimit, 20)),
-          );
-          const query = resolvedQuery;
-
-          if (!query) {
-            throw new Error('Invalid history-fetch tool arguments');
-          }
-
-          const queryTitle = `正在${describeMessageFetchQuery(query)}`;
-          emitThinking('retriever', queryTitle, '在当前聊天和历史记录中查找相关消息');
-          emitEvent({
-            type: 'retriever.query',
-            title: queryTitle,
-            detail: localEvidence.length
-              ? `本地先命中 ${localEvidence.length} 条，开始补抓远程历史`
-              : describeMessageFetchQuery(query),
-          });
-
-          global = getGlobal();
           let fetchedPageIndex = 0;
           let fetchedAccumulatedCount = 0;
-          const result = await runMessageFetchWithContinuation({
-            query,
-            fetchOnce: (nextQuery) => runMessageFetch(global, nextQuery, tabId, {
-              onRemotePageFetched: (pageResult) => {
-                fetchedPageIndex += 1;
-                fetchedAccumulatedCount += pageResult.total;
-                appendRetrieverPageTrace(actions, tabId, fetchedPageIndex, fetchedAccumulatedCount, pageResult, {
-                  localCount: localEvidence.length,
-                });
-                global = persistFetchedMessages({
-                  messages: pageResult.sourceMessages,
-                  chatId: selectCurrentMessageList(global, tabId)?.chatId,
-                  threadId: selectCurrentMessageList(global, tabId)?.threadId || MAIN_THREAD_ID,
-                  getGlobal,
-                  setGlobal,
-                  forceUpdateCache,
-                  addMessages,
-                });
-              },
-              onRemoteFloodWait: (seconds) => {
-                appendRetrieverFloodWaitTrace(actions, tabId, seconds);
-              },
-            }),
-            onPageFetched: undefined,
+          const { query, result, toolOutput, message } = await executeHistoryFetchToolCall({
+            toolCall,
+            userPrompt: trimmedPrompt,
+            defaultLimit: Math.min(100, Math.max(aiAssistant.contextLimit, 20)),
+            onQueryStart: (resolvedQuery) => {
+              const queryTitle = `正在${describeMessageFetchQuery(resolvedQuery)}`;
+              emitThinking('retriever', queryTitle, '在当前聊天和历史记录中查找相关消息');
+              emitEvent({
+                type: 'retriever.query',
+                title: queryTitle,
+                detail: localEvidence.length
+                  ? `本地先命中 ${localEvidence.length} 条，开始补抓远程历史`
+                  : describeMessageFetchQuery(resolvedQuery),
+              });
+            },
+            executeQuery: async ({ query: nextQuery }) => {
+              global = getGlobal();
+
+              return runMessageFetchWithContinuation({
+                query: nextQuery,
+                fetchOnce: (continuationQuery) => runMessageFetch(global, continuationQuery, tabId, {
+                  onRemotePageFetched: (pageResult) => {
+                    fetchedPageIndex += 1;
+                    fetchedAccumulatedCount += pageResult.total;
+                    appendRetrieverPageTrace(actions, tabId, fetchedPageIndex, fetchedAccumulatedCount, pageResult, {
+                      localCount: localEvidence.length,
+                    });
+                    global = persistFetchedMessages({
+                      messages: pageResult.sourceMessages,
+                      chatId: selectCurrentMessageList(global, tabId)?.chatId,
+                      threadId: selectCurrentMessageList(global, tabId)?.threadId || MAIN_THREAD_ID,
+                      getGlobal,
+                      setGlobal,
+                      forceUpdateCache,
+                      addMessages,
+                    });
+                  },
+                  onRemoteFloodWait: (seconds) => {
+                    appendRetrieverFloodWaitTrace(actions, tabId, seconds);
+                  },
+                }),
+                onPageFetched: undefined,
+              });
+            },
           });
           if (!isRunActive()) {
             throw new DOMException('The operation was aborted.', 'AbortError');
@@ -1095,42 +1020,53 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             },
           });
 
-          const toolOutput: ToolOutput = {
-            type: 'message.fetch',
-            query,
-            result,
-            createdAt: Date.now(),
-          };
           collectedToolOutputs = [...collectedToolOutputs, toolOutput].slice(-12);
           global = getGlobal();
           global = appendAiToolOutput(global, tabId, toolOutput);
           setGlobal(global);
 
-          return {
-            role: 'tool' as const,
-            tool_call_id: toolCall.id,
-            name: toolCall.function.name,
-            content: formatHistoryFetchToolResultForModel(query, result),
-          };
+          return message;
         },
         maxSteps: 6,
       }).catch((error) => {
         if (fallbackQuery && fallbackResult) {
           emitThinking('answer', '正在整理任务结果', '模型未完成回答，改用历史结果兜底输出');
           fallbackFinalText = buildHistoryFetchFallbackAnswer(fallbackQuery, fallbackResult);
-          return conversationMessages;
+          return undefined;
         }
 
         throw error;
       });
 
+      if (loopResult) {
+        historyMessageSource = loopResult.messages;
+        finalAnswerText = sanitizeAssistantText(loopResult.content) || '';
+      }
       actualUsedCount = localEvidence.length + fetchedCount;
-      finalToolOutputLines = formatAiPromptToolOutputLines(
-        collectedToolOutputs,
-        4,
-      );
     } else {
+      const fullPrompt = buildAiTaskPrompt(
+        '回答用户问题',
+        '根据聊天记录直接回答用户问题。',
+        '如果信息足够就直接给结果；如果信息不足就明确说明还缺什么。',
+        trimmedPrompt,
+        contextEvidenceLines,
+        conversationContextLines,
+        formatAiPromptToolOutputLines(collectedToolOutputs, 4),
+      );
+      const responseText = await requestAiCompletion(
+        provider,
+        model,
+        apiKey,
+        settings.baseUrl,
+        fullPrompt,
+        {
+          systemPrompt: buildAiRequestSystemPrompt(),
+          temperature: 0.3,
+          signal,
+        },
+      );
       historyMessageSource = conversationMessages;
+      finalAnswerText = sanitizeAssistantText(responseText as string) || '';
     }
 
     if (fallbackFinalText) {
@@ -1139,12 +1075,17 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       return;
     }
 
-    emitThinking('answer', '正在生成最终回答', '开始流式输出结果');
-    await streamFinalAnswer({
-      historyMessageSource,
-      toolOutputLines: finalToolOutputLines,
-      actualUsedCount,
+    if (!finalAnswerText?.trim()) {
+      throw new Error('AI returned no visible answer.');
+    }
+
+    emitThinking('answer', '正在生成最终回答', '开始整理结果');
+    commitFinalAnswer(finalAnswerText, historyMessageSource, actualUsedCount);
+    emitEvent({
+      type: 'answer.final',
+      text: finalAnswerText,
     });
+    emitEvent({ type: 'run.done' });
   } catch (err: any) {
     if (isAbortError(err) || signal.aborted) {
       emitEvent({ type: 'run.cancelled' });
