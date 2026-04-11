@@ -88,7 +88,7 @@ function getAiPromptTimeContext() {
   };
 }
 
-function buildAiRequestSystemPrompt() {
+export function buildAiRequestSystemPrompt() {
   return [
     buildAiSystemPrompt(getAiPromptTimeContext()),
     '',

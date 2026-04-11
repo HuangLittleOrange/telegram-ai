@@ -2,6 +2,7 @@ import {
   buildAiConversationMessages,
   buildAiFinalAnswerSystemPrompt,
   buildAiFinalAnswerTaskPrompt,
+  resolveAiConversationTurnsForRequest,
   buildAiSystemPrompt,
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
@@ -23,6 +24,7 @@ import {
   serializeOpenAiCompatibleMessages,
   shouldOfferHistoryFetchTool,
 } from './ai';
+import { createEmptyAiAssistantState } from './aiRunState';
 
 describe('ai helper', () => {
   describe('clampAiContextLimit', () => {
@@ -121,6 +123,19 @@ describe('ai helper', () => {
   });
 
   describe('prompt architecture', () => {
+    it('ignores stale persisted history on the first conversation turn', () => {
+      expect(resolveAiConversationTurnsForRequest({
+        isFirstConversationTurn: true,
+        historyMessages: [
+          { role: 'assistant', content: '旧的回答' },
+          { role: 'user', content: '旧的问题' },
+        ],
+        turns: [
+          { role: 'user', content: '这次的新问题' },
+        ],
+      })).toEqual([]);
+    });
+
     it('builds a single shared system prompt with identity, tools, behavior sections, and current time context', () => {
       const prompt = buildAiSystemPrompt({
         now: new Date('2026-04-09T11:38:00+08:00').getTime(),
@@ -134,15 +149,18 @@ describe('ai helper', () => {
       expect(prompt).toContain('history-fetch');
       expect(prompt).toContain('fromDate');
       expect(prompt).toContain('toDate');
-      expect(prompt).toContain('"mode": "preset"');
-      expect(prompt).toContain('lastWeek');
+      expect(prompt).toContain('上周');
+      expect(prompt).toContain('按自然周（周一到周日）');
       expect(prompt).toContain('只使用结构化参数');
       expect(prompt).toContain('toolQueryHints');
+      expect(prompt).toContain('默认读取当前聊天');
+      expect(prompt).toContain('只拿到很少几条消息');
       expect(prompt).toContain('Telegram 群聊风格');
       expect(prompt).toContain('通用事实或背景知识');
       expect(prompt).toContain('先直接给结论');
       expect(prompt).toContain('当前时间：2026-04-09 11:38');
       expect(prompt).toContain('当前时区：Asia/Shanghai');
+      expect(prompt).not.toContain('## Time Range Examples');
       expect(prompt).not.toContain('planner');
       expect(prompt).not.toContain('judge');
     });
@@ -723,7 +741,7 @@ describe('ai helper', () => {
 
       expect(progress.title).toBe('第 2 页');
       expect(progress.detail).toContain('本地 58 条');
-      expect(progress.detail).toContain('远程新增 536 条');
+      expect(progress.detail).toContain('新增 536 条');
       expect(progress.detail).toContain('累计可用 594 条');
       expect(progress.detail).toContain('本页 2 条');
       expect(progress.detail).toContain('2026-04-01');
@@ -736,7 +754,7 @@ describe('ai helper', () => {
     it('formats a user-facing wait message for Telegram flood limits', () => {
       const progress = formatHistoryFetchFloodWaitProgress(2);
 
-      expect(progress.title).toBe('Telegram 限流');
+      expect(progress.title).toBe('检索限流');
       expect(progress.detail).toBe('等待 2 秒后继续抓取');
     });
   });
@@ -785,6 +803,196 @@ describe('ai helper', () => {
       expect(answer).toContain('已读取上周的聊天记录，共 3 条。');
       expect(answer).toContain('较活跃的发言人有 Alice（2 条）');
       expect(answer).toContain('先摘几条原话：');
+    });
+
+    it('warns when a range summary only has sparse local evidence', () => {
+      const answer = buildHistoryFetchFallbackAnswer({
+        mode: 'range',
+        timeRange: {
+          mode: 'custom',
+          startAt: new Date('2026-03-30T00:00:00+08:00').getTime(),
+          endAt: new Date('2026-04-06T00:00:00+08:00').getTime(),
+        },
+      }, {
+        messages: [
+          {
+            chatId: 'chat-1',
+            threadId: -1,
+            messageId: 1,
+            sender: 'Alice',
+            date: 1774972800,
+            text: '只同步到这一条',
+          },
+        ],
+        total: 1,
+        truncated: false,
+        evidenceIds: [1],
+      });
+
+      expect(answer).toContain('本地只找到 1 条消息');
+      expect(answer).toContain('不能代表这段时间的完整话题');
+      expect(answer).toContain('先同步更多历史');
+    });
+  });
+
+  describe('requestAiPrompt UI contract', () => {
+    it('appends the user turn, emits retriever and answer progress, and commits the final assistant text', async () => {
+      const actionHandlers = new Map<string, Function>();
+      const progressSnapshots: string[] = [];
+
+      let currentGlobal: any = {
+        settings: {
+          byKey: {
+            aiSettings: {
+              provider: 'openai',
+              model: 'gpt-4.1-mini',
+              apiKey: 'test-key',
+              baseUrl: undefined,
+            },
+          },
+        },
+        byTabId: {
+          1: {
+            aiAssistant: createEmptyAiAssistantState(),
+            messageLists: [],
+          },
+        },
+      };
+
+      const actions = {
+        appendAiTurn: jest.fn((payload: { tabId: number; role: 'user' | 'assistant'; text: string; thinkingLog?: unknown }) => {
+          const tabState = currentGlobal.byTabId[payload.tabId];
+          tabState.aiAssistant.turns = [
+            ...tabState.aiAssistant.turns,
+            {
+              role: payload.role,
+              text: payload.text,
+              thinkingLog: payload.thinkingLog,
+            },
+          ];
+        }),
+        setAiThinkingEndedAt: jest.fn((payload: { tabId: number; thinkingEndedAt?: number }) => {
+          currentGlobal.byTabId[payload.tabId].aiAssistant.thinkingEndedAt = payload.thinkingEndedAt;
+        }),
+        setAiActualUsedCount: jest.fn((payload: { tabId: number; actualUsedCount: number }) => {
+          currentGlobal.byTabId[payload.tabId].aiAssistant.actualUsedCount = payload.actualUsedCount;
+        }),
+      };
+
+      const originalFetch = globalThis.fetch;
+      const fetchMock = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        const systemPrompt = body.messages?.[0]?.content || '';
+        const finalAnswerPhase = typeof systemPrompt === 'string' && systemPrompt.includes('当前阶段不能调用任何工具');
+        const content = finalAnswerPhase
+          ? '最终答案：BitTensor 是一个去中心化的机器学习网络。'
+          : '我先直接回答。';
+
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [{
+              message: {
+                content,
+              },
+            }],
+          }),
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content,
+              },
+            }],
+          }),
+        } as never;
+      });
+
+      try {
+        globalThis.fetch = fetchMock as never;
+
+        await jest.isolateModulesAsync(async () => {
+          jest.doMock('../index', () => ({
+            addActionHandler: jest.fn((name: string, handler: Function) => {
+              actionHandlers.set(name, handler);
+            }),
+            getGlobal: jest.fn(() => currentGlobal),
+            setGlobal: jest.fn((next: any) => {
+              currentGlobal = next;
+              progressSnapshots.push(JSON.stringify(next.byTabId[1].aiAssistant));
+            }),
+            forceUpdateCache: jest.fn(),
+            loadCachedGlobal: jest.fn(),
+          }));
+          jest.doMock('../../util/establishMultitabRole', () => ({
+            getCurrentTabId: jest.fn(() => 1),
+          }));
+          jest.doMock('../../util/localization', () => ({
+            getTranslationFn: jest.fn(() => (value: string) => value),
+          }));
+          jest.doMock('../cache', () => ({
+            forceUpdateCache: jest.fn(),
+            loadCachedGlobal: jest.fn(() => undefined),
+          }));
+          jest.doMock('./messageFetch', () => ({
+            describeMessageFetchQuery: jest.fn(() => '按时间读取：上周'),
+            runMessageFetch: jest.fn(),
+            runMessageFetchWithContinuation: jest.fn(),
+          }));
+          jest.doMock('./messageSummary', () => ({
+            getMessageSummaryText: jest.fn((_: unknown, message: { text?: string }) => message.text || ''),
+          }));
+          jest.doMock('./peers', () => ({
+            getPeerTitle: jest.fn(() => 'peer-title'),
+          }));
+          jest.doMock('../selectors', () => ({
+            selectCurrentMessageList: jest.fn(() => undefined),
+            selectTabState: jest.fn((global: any, tabId: number) => global.byTabId[tabId]),
+            selectViewportIds: jest.fn(() => undefined),
+            selectChatMessages: jest.fn(() => ({})),
+            selectSender: jest.fn(() => undefined),
+          }));
+
+          await import('../actions/ui/ai');
+        });
+
+        const requestAiPrompt = actionHandlers.get('requestAiPrompt');
+        expect(requestAiPrompt).toBeDefined();
+
+        await requestAiPrompt!(currentGlobal, actions as never, {
+          prompt: 'BitTensor 是什么？',
+          tabId: 1,
+        });
+
+        expect(actions.appendAiTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({
+          role: 'user',
+          text: 'BitTensor 是什么？',
+          tabId: 1,
+        }));
+        expect(actions.appendAiTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+          role: 'assistant',
+          text: '最终答案：BitTensor 是一个去中心化的机器学习网络。',
+          tabId: 1,
+        }));
+
+        expect(progressSnapshots.some((snapshot) => snapshot.includes('"activeStage":"retriever"'))).toBe(true);
+        expect(progressSnapshots.some((snapshot) => snapshot.includes('"activeStage":"answer"'))).toBe(true);
+        expect(progressSnapshots.some((snapshot) => snapshot.includes('"thinkingStage":"正在理解你的问题"'))).toBe(true);
+        expect(progressSnapshots.some((snapshot) => snapshot.includes('"finalText":"最终答案：BitTensor 是一个去中心化的机器学习网络。"'))).toBe(true);
+
+        expect(currentGlobal.byTabId[1].aiAssistant.turns).toEqual([
+          expect.objectContaining({
+            role: 'user',
+            text: 'BitTensor 是什么？',
+          }),
+          expect.objectContaining({
+            role: 'assistant',
+            text: '最终答案：BitTensor 是一个去中心化的机器学习网络。',
+          }),
+        ]);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });
