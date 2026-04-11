@@ -1,0 +1,147 @@
+import type { AiChatMessage, AiToolCall } from './aiAgentRuntime';
+
+type OpenAiCompatibleRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export type OpenAiCompatibleMessage = {
+  role: OpenAiCompatibleRole;
+  content?: string;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: AiToolCall[];
+};
+
+function sanitizeTranscriptAssistantText(text: string | undefined) {
+  if (!text) return undefined;
+
+  return text
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/&lt;think\b[^&]*&gt;[\s\S]*?&lt;\/think&gt;/gi, '')
+    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
+    .replace(/&lt;think\b[^&]*&gt;[\s\S]*$/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function buildPersistentAiHistoryMessages(
+  messages: AiChatMessage[],
+  finalAssistantText?: string,
+) {
+  const persistedMessages = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      ...message,
+      content: message.content || '',
+    }));
+
+  const normalizedFinalText = sanitizeTranscriptAssistantText(finalAssistantText) || finalAssistantText || '';
+  if (!normalizedFinalText.trim()) {
+    return persistedMessages;
+  }
+
+  return [
+    ...persistedMessages,
+    {
+      role: 'assistant' as const,
+      content: normalizedFinalText.trim(),
+    },
+  ];
+}
+
+export function buildAiConversationMessages(args: {
+  systemPrompt: string;
+  evidenceLines: string[];
+  toolOutputLines: string[];
+  turns: AiChatMessage[];
+  currentPrompt: string;
+}) {
+  const {
+    systemPrompt,
+    evidenceLines,
+    toolOutputLines,
+    turns,
+    currentPrompt,
+  } = args;
+
+  const lastTurn = turns[turns.length - 1];
+  const shouldAppendCurrentPrompt = !(
+    lastTurn?.role === 'user'
+    && lastTurn.content.trim() === currentPrompt.trim()
+  );
+
+  const systemContent = [
+    systemPrompt,
+    ...(evidenceLines.length ? [
+      '',
+      '当前聊天记录：',
+      ...evidenceLines,
+    ] : []),
+    ...(toolOutputLines.length ? [
+      '',
+      '工具结果：',
+      ...toolOutputLines,
+    ] : []),
+  ].join('\n');
+
+  return [
+    { role: 'system' as const, content: systemContent },
+    ...turns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+      ...(turn.name ? { name: turn.name } : {}),
+      ...(turn.tool_call_id ? { tool_call_id: turn.tool_call_id } : {}),
+      ...(turn.tool_calls?.length ? { tool_calls: turn.tool_calls } : {}),
+    })),
+    ...(shouldAppendCurrentPrompt ? [{
+      role: 'user' as const,
+      content: currentPrompt,
+    }] : []),
+  ] as AiChatMessage[];
+}
+
+export function resolveAiConversationTurnsForRequest(args: {
+  isFirstConversationTurn: boolean;
+  historyMessages?: AiChatMessage[];
+  turns: AiChatMessage[];
+}) {
+  const {
+    isFirstConversationTurn,
+    historyMessages,
+    turns,
+  } = args;
+
+  if (isFirstConversationTurn) {
+    return [] as AiChatMessage[];
+  }
+
+  return historyMessages?.length ? historyMessages : turns;
+}
+
+export function serializeOpenAiCompatibleMessages(
+  messages: Array<{
+    role: OpenAiCompatibleMessage['role'];
+    content: string;
+    name?: string;
+    tool_call_id?: string;
+    tool_calls?: AiToolCall[];
+  }>,
+): OpenAiCompatibleMessage[] {
+  return messages.map((message) => {
+    const normalizedContent = message.content.trim();
+    if (!normalizedContent) {
+      return {
+        role: message.role,
+        ...(message.name ? { name: message.name } : {}),
+        ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+        ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+      };
+    }
+
+    return {
+      role: message.role,
+      content: normalizedContent,
+      ...(message.name ? { name: message.name } : {}),
+      ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+      ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+    };
+  });
+}

@@ -12,11 +12,9 @@ import { getCurrentTabId } from '../../../util/establishMultitabRole';
 import { getTranslationFn } from '../../../util/localization';
 import { forceUpdateCache, loadCachedGlobal } from '../../cache';
 import {
-  buildAiConversationMessages,
   buildAiFinalAnswerTaskPrompt,
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
-  buildPersistentAiHistoryMessages,
   clampAiContextLimit,
   formatAiPromptConversationContextLines,
   formatAiPromptEvidenceLines,
@@ -29,7 +27,6 @@ import {
   parseOpenAiAssistantText,
   pickRecentMessageIds,
   sanitizeAssistantText,
-  serializeOpenAiCompatibleMessages,
   shouldOfferHistoryFetchTool,
 } from '../../helpers/ai';
 import {
@@ -48,6 +45,12 @@ import {
   type AiToolCall,
   resolveAiAgentConversation,
 } from '../../helpers/aiAgentRuntime';
+import {
+  buildAiConversationMessages,
+  buildPersistentAiHistoryMessages,
+  resolveAiConversationTurnsForRequest,
+  serializeOpenAiCompatibleMessages,
+} from '../../helpers/aiTranscript';
 import {
   type AiEvidenceItem,
   type AiEvidenceSource,
@@ -826,20 +829,37 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     return;
   }
 
+  const isFirstConversationTurn = !(aiAssistant.turns || []).some((turn) => turn.role === 'assistant');
   const {
     chatId,
     threadId = MAIN_THREAD_ID,
     evidence: recentEvidence,
-  } = buildContextEvidence(global, tabId, aiAssistant.contextLimit);
+  } = isFirstConversationTurn
+    ? {
+      chatId: selectCurrentMessageList(global, tabId)?.chatId,
+      threadId: selectCurrentMessageList(global, tabId)?.threadId || MAIN_THREAD_ID,
+      evidence: [],
+    }
+    : buildContextEvidence(global, tabId, aiAssistant.contextLimit);
 
   try {
-    emitThinking('retriever', '正在读取最近聊天记录', '先拿当前可见的消息和本地缓存');
-    emitEvent({
-      type: 'retriever.query',
-      title: '初始聊天记录收集',
-      detail: '读取当前可见消息与本地缓存',
-    });
-    const cachedEvidence = chatId
+    if (!isFirstConversationTurn) {
+      emitThinking('retriever', '正在读取最近聊天记录', '先拿当前可见的消息和本地缓存');
+      emitEvent({
+        type: 'retriever.query',
+        title: '初始聊天记录收集',
+        detail: '读取当前可见消息与本地缓存',
+      });
+    } else {
+      emitThinking('retriever', '首次对话不预置聊天记录', '如信息不足将调用 history-fetch 精准读取');
+      emitEvent({
+        type: 'retriever.query',
+        title: '首次对话',
+        detail: '跳过自动注入当前聊天记录',
+      });
+    }
+
+    const cachedEvidence = (!isFirstConversationTurn && chatId)
       ? await buildCachedEvidence(chatId, threadId, aiAssistant.contextLimit)
       : [];
     if (!isRunActive()) {
@@ -848,8 +868,12 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     const localEvidence = dedupeAiEvidence([...cachedEvidence, ...recentEvidence]);
     emitEvent({
       type: 'retriever.result',
-      title: `已汇总 ${localEvidence.length} 条本地聊天记录`,
-      detail: '如果本地不够，将继续远程补抓历史消息',
+      title: isFirstConversationTurn
+        ? '首次对话：未自动注入聊天记录'
+        : `已汇总 ${localEvidence.length} 条本地聊天记录`,
+      detail: isFirstConversationTurn
+        ? '如信息不足会按需调用 history-fetch'
+        : '仅使用本地已同步聊天记录',
     });
     const contextEvidenceLines = formatAiPromptEvidenceLines(
       localEvidence.slice(-Math.min(localEvidence.length, 12)),
@@ -860,12 +884,14 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     );
     let collectedToolOutputs = [...(aiAssistant.toolOutputHistory || [])];
     const conversationContextLines = formatAiPromptConversationContextLines(aiAssistant.turns, 6);
-    const conversationTurns = (aiAssistant.historyMessages?.length
-      ? aiAssistant.historyMessages
-      : (aiAssistant.turns || []).map((turn) => ({
+    const conversationTurns = resolveAiConversationTurnsForRequest({
+      isFirstConversationTurn,
+      historyMessages: aiAssistant.historyMessages,
+      turns: (aiAssistant.turns || []).map((turn) => ({
         role: turn.role,
         content: turn.text,
-      }))) as AiChatMessage[];
+      })) as AiChatMessage[],
+    });
 
     const conversationMessages: AiChatMessage[] = buildAiConversationMessages({
       systemPrompt: buildAiRequestSystemPrompt(),
