@@ -331,45 +331,6 @@ export function buildPersistentAiHistoryMessages(
 function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefined {
   type PresetTimeRangeValue = Extract<TimeRange, { mode: 'preset' }>['value'];
 
-  const normalizeTimeValue = (input: unknown, boundary: 'start' | 'end' = 'start') => {
-    if (typeof input === 'string') {
-      const trimmed = input.trim();
-      if (!trimmed) {
-        return undefined;
-      }
-
-      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (dateOnlyMatch) {
-        const year = Number(dateOnlyMatch[1]);
-        const month = Number(dateOnlyMatch[2]);
-        const day = Number(dateOnlyMatch[3]);
-        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-          return undefined;
-        }
-
-        const date = new Date(year, month - 1, day);
-        if (boundary === 'end') {
-          date.setDate(date.getDate() + 1);
-        }
-        return date.getTime();
-      }
-
-      const parsed = Date.parse(trimmed);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-
-      return undefined;
-    }
-
-    const numeric = Number(input);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
-      return undefined;
-    }
-
-    return numeric < 1e12 ? numeric * 1000 : numeric;
-  };
-
   const normalizePreset = (
     preset: unknown,
   ): { mode: 'preset'; value: PresetTimeRangeValue } | undefined => {
@@ -422,24 +383,19 @@ function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefin
   }
 
   const candidate = value as Record<string, unknown>;
-  const startAt = normalizeTimeValue(
-    candidate.startAt ?? candidate.start ?? candidate.from ?? candidate.startTime ?? candidate.fromDate,
-  );
-  const endAt = normalizeTimeValue(
-    candidate.endAt ?? candidate.end ?? candidate.to ?? candidate.endTime ?? candidate.toDate,
-    'end',
-  );
-  if (startAt && endAt && endAt > startAt) {
+  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
+  if (candidate.mode === 'preset' && preset) {
+    return preset;
+  }
+
+  const startAt = Number(candidate.startAt ?? candidate.start ?? candidate.from);
+  const endAt = Number(candidate.endAt ?? candidate.end ?? candidate.to);
+  if (Number.isFinite(startAt) && Number.isFinite(endAt) && startAt >= 0 && endAt > startAt) {
     return {
       mode: 'custom',
       startAt,
       endAt,
     };
-  }
-
-  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
-  if (candidate.mode === 'preset' && preset) {
-    return preset;
   }
 
   const days = Number(candidate.days ?? candidate.dayCount);
@@ -504,6 +460,14 @@ function normalizeHistoryFetchQueryHint(
     Number(candidate.limit ?? candidate.count ?? candidate.maxResults),
     fallbackLimit,
   );
+  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim().toLowerCase() : undefined;
+
+  if (mode === 'recent') {
+    return {
+      mode: 'recent' as const,
+      limit,
+    };
+  }
 
   if (keyword || person || timeRange) {
     return {
@@ -522,6 +486,7 @@ type NormalizedHistoryFetchQueryHint = {
   person?: PersonRef;
   timeRange?: TimeRange;
   limit?: number;
+  mode?: 'recent';
 };
 
 export function buildHistoryFetchQueryFromToolHints(args: {
@@ -578,6 +543,12 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       };
     }
 
+    if ('mode' in normalized && normalized.mode === 'recent') {
+      return {
+        mode: 'recent',
+        limit: normalized.limit || clampMessageFetchLimit(undefined, defaultLimit),
+      };
+    }
   }
 
   const hints = [
@@ -588,7 +559,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
   let keywordQuery: NormalizedHistoryFetchQueryHint | undefined;
   let personQuery: PersonRef | undefined;
   let timeRangeQuery: TimeRange | undefined;
-  let queryLimit: number | undefined;
+  let recentLimit: number | undefined;
 
   for (const hint of hints) {
     const normalized = normalizeHistoryFetchQueryHint(hint, defaultLimit);
@@ -614,8 +585,12 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       timeRangeQuery = normalized.timeRange;
     }
 
+    if ('mode' in normalized && normalized.mode === 'recent') {
+      recentLimit = normalized.limit;
+    }
+
     if ('limit' in normalized && normalized.limit) {
-      queryLimit = normalized.limit;
+      recentLimit = normalized.limit;
     }
   }
 
@@ -634,7 +609,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       mode: 'person',
       person: personQuery,
       ...(timeRangeQuery ? { timeRange: timeRangeQuery } : {}),
-      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
     };
   }
 
@@ -642,7 +617,14 @@ export function buildHistoryFetchQueryFromToolHints(args: {
     return {
       mode: 'range',
       timeRange: timeRangeQuery,
-      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+    };
+  }
+
+  if (recentLimit) {
+    return {
+      mode: 'recent',
+      limit: recentLimit || clampMessageFetchLimit(undefined, defaultLimit),
     };
   }
 
@@ -815,7 +797,7 @@ export function formatHistoryFetchPageProgress(
     title: `第 ${pageIndex} 页`,
     detail: [
       localCount ? `本地 ${localCount} 条` : undefined,
-      `新增 ${accumulatedCount} 条`,
+      `远程新增 ${accumulatedCount} 条`,
       `累计可用 ${totalAvailable} 条`,
       `本页 ${result.total} 条`,
       dateRange,
@@ -828,7 +810,7 @@ export function formatHistoryFetchPageProgress(
 
 export function formatHistoryFetchFloodWaitProgress(seconds: number) {
   return {
-    title: '检索限流',
+    title: 'Telegram 限流',
     detail: `等待 ${seconds} 秒后继续抓取`,
   };
 }
@@ -839,7 +821,6 @@ export function buildHistoryFetchFallbackAnswer(
 ) {
   const scopeLabel = describeRawExportQuery(query);
   const messages = result.messages.filter((message) => message.text?.trim());
-  const isSparseRangeSummary = query.mode === 'range' && result.total > 0 && result.total <= 2;
   const senderCounts = new Map<string, number>();
   const dayCounts = new Map<string, number>();
 
@@ -863,15 +844,6 @@ export function buildHistoryFetchFallbackAnswer(
 
   const exampleLines = messages.slice(0, 5)
     .map((message) => `- [${formatAiPromptTimestamp(message.date)}] ${message.sender}: ${message.text.trim()}`);
-
-  if (isSparseRangeSummary) {
-    return [
-      `已读取${scopeLabel}的聊天记录，但当前聊天在这段时间里本地只找到 ${result.total} 条消息。`,
-      '这不能代表这段时间的完整话题。',
-      '如果你是想看整周都聊了什么，建议先同步更多历史再继续分析。',
-      exampleLines.length ? ['目前能看到的原话：', ...exampleLines].join('\n') : undefined,
-    ].filter(Boolean).join('\n');
-  }
 
   return [
     `已读取${scopeLabel}的聊天记录，共 ${result.total} 条。`,
@@ -989,24 +961,6 @@ export function buildAiConversationMessages(args: {
       content: currentPrompt,
     }] : []),
   ] as AiChatMessage[];
-}
-
-export function resolveAiConversationTurnsForRequest(args: {
-  isFirstConversationTurn: boolean;
-  historyMessages?: AiChatMessage[];
-  turns: AiChatMessage[];
-}) {
-  const {
-    isFirstConversationTurn,
-    historyMessages,
-    turns,
-  } = args;
-
-  if (isFirstConversationTurn) {
-    return [] as AiChatMessage[];
-  }
-
-  return historyMessages?.length ? historyMessages : turns;
 }
 
 export type OpenAiCompatibleMessage = {

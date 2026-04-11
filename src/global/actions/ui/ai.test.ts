@@ -47,9 +47,37 @@ describe('ui ai action', () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = jest.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'));
+      const isStreamRequest = Boolean(body.stream);
       const content = body.tools?.length
         ? '我先直接回答。'
         : '最终答案：BitTensor 是一个去中心化的机器学习网络。';
+
+      if (isStreamRequest) {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => ({
+              read: async () => ({ done: true, value: undefined }),
+              cancel: async () => undefined,
+            }),
+          },
+          json: async () => ({
+            choices: [{
+              message: {
+                content,
+              },
+            }],
+          }),
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content,
+              },
+            }],
+          }),
+        } as never;
+      }
 
       return {
         ok: true,
@@ -97,6 +125,9 @@ describe('ui ai action', () => {
           forceUpdateCache: jest.fn(),
           loadCachedGlobal: jest.fn(() => undefined),
         }));
+        jest.doMock('../../reducers/messages', () => ({
+          addMessages: jest.fn(),
+        }));
         jest.doMock('../../helpers/messageFetch', () => ({
           describeMessageFetchQuery: jest.fn(() => '按时间读取：上周'),
           runMessageFetch: jest.fn(),
@@ -107,6 +138,21 @@ describe('ui ai action', () => {
         }));
         jest.doMock('../../helpers/peers', () => ({
           getPeerTitle: jest.fn(() => 'peer-title'),
+        }));
+        jest.doMock('../../helpers/aiProviderStream', () => ({
+          readAiProviderStream: jest.fn(async ({ onEvent, runId }: { onEvent: Function; runId: string }) => {
+            onEvent({
+              type: 'answer.final',
+              runId,
+              text: '最终答案：BitTensor 是一个去中心化的机器学习网络。',
+              createdAt: Date.now(),
+            });
+            onEvent({
+              type: 'run.done',
+              runId,
+              createdAt: Date.now(),
+            });
+          }),
         }));
         jest.doMock('../../selectors', () => ({
           selectCurrentMessageList: jest.fn(() => undefined),

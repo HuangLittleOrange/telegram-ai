@@ -2,7 +2,6 @@ import {
   buildAiConversationMessages,
   buildAiFinalAnswerSystemPrompt,
   buildAiFinalAnswerTaskPrompt,
-  resolveAiConversationTurnsForRequest,
   buildAiSystemPrompt,
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
@@ -122,19 +121,6 @@ describe('ai helper', () => {
   });
 
   describe('prompt architecture', () => {
-    it('ignores stale persisted history on the first conversation turn', () => {
-      expect(resolveAiConversationTurnsForRequest({
-        isFirstConversationTurn: true,
-        historyMessages: [
-          { role: 'assistant', content: '旧的回答' },
-          { role: 'user', content: '旧的问题' },
-        ],
-        turns: [
-          { role: 'user', content: '这次的新问题' },
-        ],
-      })).toEqual([]);
-    });
-
     it('builds a single shared system prompt with identity, tools, behavior sections, and current time context', () => {
       const prompt = buildAiSystemPrompt({
         now: new Date('2026-04-09T11:38:00+08:00').getTime(),
@@ -753,7 +739,7 @@ describe('ai helper', () => {
     it('formats a user-facing wait message for Telegram flood limits', () => {
       const progress = formatHistoryFetchFloodWaitProgress(2);
 
-      expect(progress.title).toBe('检索限流');
+      expect(progress.title).toBe('Telegram 限流');
       expect(progress.detail).toBe('等待 2 秒后继续抓取');
     });
   });
@@ -802,35 +788,6 @@ describe('ai helper', () => {
       expect(answer).toContain('已读取上周的聊天记录，共 3 条。');
       expect(answer).toContain('较活跃的发言人有 Alice（2 条）');
       expect(answer).toContain('先摘几条原话：');
-    });
-
-    it('warns when a range summary only has sparse local evidence', () => {
-      const answer = buildHistoryFetchFallbackAnswer({
-        mode: 'range',
-        timeRange: {
-          mode: 'custom',
-          startAt: new Date('2026-03-30T00:00:00+08:00').getTime(),
-          endAt: new Date('2026-04-06T00:00:00+08:00').getTime(),
-        },
-      }, {
-        messages: [
-          {
-            chatId: 'chat-1',
-            threadId: -1,
-            messageId: 1,
-            sender: 'Alice',
-            date: 1774972800,
-            text: '只同步到这一条',
-          },
-        ],
-        total: 1,
-        truncated: false,
-        evidenceIds: [1],
-      });
-
-      expect(answer).toContain('本地只找到 1 条消息');
-      expect(answer).toContain('不能代表这段时间的完整话题');
-      expect(answer).toContain('先同步更多历史');
     });
   });
 
