@@ -11,13 +11,17 @@ import type {
   AiJudgeDecision,
   AiQueryPlan,
 } from './aiOrchestrator';
-import { serializeOpenAiCompatibleMessages } from './aiTranscript';
+
+import { sanitizeAssistantText } from './aiText';
 export {
   buildAiFinalAnswerSystemPrompt,
   buildAiRequestSystemPrompt,
   buildAiSystemPrompt,
   getAiPromptTimeContext,
 } from './aiContext';
+export {
+  sanitizeAssistantText,
+} from './aiText';
 export {
   buildAiConversationMessages,
   buildPersistentAiHistoryMessages,
@@ -864,18 +868,6 @@ export function getAiApiUrl(provider: AiProvider, baseUrl?: string) {
   return normalizedBaseUrl
     ? normalizeOpenAiCompatibleUrl(normalizedBaseUrl)
     : 'https://api.openai.com/v1/chat/completions';
-}
-
-export function sanitizeAssistantText(text: string | undefined) {
-  if (!text) return undefined;
-
-  return text
-    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
-    .replace(/&lt;think\b[^&]*&gt;[\s\S]*?&lt;\/think&gt;/gi, '')
-    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
-    .replace(/&lt;think\b[^&]*&gt;[\s\S]*$/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 export function parseOpenAiAssistantText(responseJson: any) {

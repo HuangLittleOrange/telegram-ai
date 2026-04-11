@@ -1,5 +1,7 @@
 import type { AiChatMessage, AiToolCall } from './aiAgentRuntime';
 
+import { sanitizeAssistantText } from './aiText';
+
 type OpenAiCompatibleRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export type OpenAiCompatibleMessage = {
@@ -9,18 +11,6 @@ export type OpenAiCompatibleMessage = {
   tool_call_id?: string;
   tool_calls?: AiToolCall[];
 };
-
-function sanitizeTranscriptAssistantText(text: string | undefined) {
-  if (!text) return undefined;
-
-  return text
-    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
-    .replace(/&lt;think\b[^&]*&gt;[\s\S]*?&lt;\/think&gt;/gi, '')
-    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
-    .replace(/&lt;think\b[^&]*&gt;[\s\S]*$/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 export function buildPersistentAiHistoryMessages(
   messages: AiChatMessage[],
@@ -33,7 +23,7 @@ export function buildPersistentAiHistoryMessages(
       content: message.content || '',
     }));
 
-  const normalizedFinalText = sanitizeTranscriptAssistantText(finalAssistantText) || finalAssistantText || '';
+  const normalizedFinalText = sanitizeAssistantText(finalAssistantText) || finalAssistantText || '';
   if (!normalizedFinalText.trim()) {
     return persistedMessages;
   }

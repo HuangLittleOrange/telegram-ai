@@ -23,6 +23,64 @@ describe('ai transcript helper', () => {
       historyMessages: staleHistory,
       turns: [{ role: 'user', content: 'fresh question' }],
     })).toEqual(staleHistory);
+
+    expect(resolveAiConversationTurnsForRequest({
+      isFirstConversationTurn: false,
+      turns: staleHistory,
+    })).toEqual(staleHistory);
+  });
+
+  it('appends the current prompt when it is missing from the turn history', () => {
+    const result = buildAiConversationMessages({
+      systemPrompt: 'system',
+      evidenceLines: [],
+      toolOutputLines: [],
+      turns: [{ role: 'assistant', content: 'hello' }],
+      currentPrompt: '最近一周聊了什么',
+    });
+
+    expect(result).toEqual([
+      { role: 'system', content: 'system' },
+      { role: 'assistant', content: 'hello' },
+      { role: 'user', content: '最近一周聊了什么' },
+    ]);
+  });
+
+  it('does not duplicate the trailing current prompt', () => {
+    const result = buildAiConversationMessages({
+      systemPrompt: 'system',
+      evidenceLines: [],
+      toolOutputLines: [],
+      turns: [
+        { role: 'assistant', content: 'hello' },
+        { role: 'user', content: '最近一周聊了什么' },
+      ],
+      currentPrompt: '最近一周聊了什么',
+    });
+
+    expect(result).toEqual([
+      { role: 'system', content: 'system' },
+      { role: 'assistant', content: 'hello' },
+      { role: 'user', content: '最近一周聊了什么' },
+    ]);
+  });
+
+  it('preserves chronological replay of prior turns', () => {
+    const turns = Array.from({ length: 6 }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: `turn-${index + 1}`,
+    }));
+
+    const result = buildAiConversationMessages({
+      systemPrompt: 'system',
+      evidenceLines: [],
+      toolOutputLines: [],
+      turns,
+      currentPrompt: 'BitTensor 是什么？',
+    });
+
+    expect(result.slice(1, -1)).toEqual(turns);
+    expect(result.at(-1)).toEqual({ role: 'user', content: 'BitTensor 是什么？' });
   });
 
   it('preserves assistant tool call messages when rebuilding the conversation payload', () => {
