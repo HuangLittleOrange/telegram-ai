@@ -11,15 +11,16 @@ import type {
   AiJudgeDecision,
   AiQueryPlan,
 } from './aiOrchestrator';
+export {
+  buildAiFinalAnswerSystemPrompt,
+  buildAiRequestSystemPrompt,
+  buildAiSystemPrompt,
+  getAiPromptTimeContext,
+} from './aiContext';
 
 export const AI_CONTEXT_LIMIT_MIN = 20;
 export const AI_CONTEXT_LIMIT_MAX = 500;
 export const AI_CONTEXT_LIMIT_DEFAULT = 100;
-
-type AiPromptTimeContext = {
-  now?: number;
-  timeZone?: string;
-};
 
 function joinPromptBlocks(...blocks: Array<string | Array<string | undefined> | undefined>) {
   return blocks
@@ -36,99 +37,6 @@ function joinPromptBlocks(...blocks: Array<string | Array<string | undefined> | 
       return trimmed ? [trimmed] : [];
     })
     .join('\n\n');
-}
-
-function formatPromptCurrentDateTime(now: number, timeZone?: string) {
-  const formatter = new Intl.DateTimeFormat('sv-SE', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-
-  return formatter.format(new Date(now)).replace(' ', ' ');
-}
-
-function buildAiTimeContextBlock({ now = Date.now(), timeZone }: AiPromptTimeContext = {}) {
-  const resolvedTimeZone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const formattedNow = formatPromptCurrentDateTime(now, resolvedTimeZone);
-
-  return [
-    '## Time Context',
-    `当前时间：${formattedNow}`,
-    `当前时区：${resolvedTimeZone}`,
-  ];
-}
-
-export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
-  return joinPromptBlocks(
-    [
-      '## Identity',
-      '你是 Telegram AI 聊天助手，负责读取和整理聊天记录，帮助用户完成任务。',
-    ],
-    buildAiTimeContextBlock(timeContext),
-    [
-      '## Mission',
-      '把聊天内容转成可执行结论、回复草稿、待办，或者明确指出还缺什么信息。',
-    ],
-    [
-      '## Protocol',
-      '每轮只做一件事：继续检索、直接回答，或者请求澄清。',
-      '先判断信息够不够；不够就调用 `history-fetch`，够了就直接回答。',
-      '如果用户问的是通用事实或背景知识，而聊天记录里没有直接答案，可以直接基于模型已有知识回答，但要明确说明这部分不是来自当前聊天记录。',
-      '工具结果只作为证据，不要把它当成最终答案。',
-      '如果 `history-fetch` 的结果被截断，或者明显还没覆盖完要找的时间范围，就继续用更早的 `beforeMessageId` 补历史，直到信息足够或者没有更早消息。',
-      '不要为了调用工具而调用工具，也不要在信息足够时继续检索。',
-      '先把任务拆成可执行步骤，再决定下一步动作。',
-    ],
-    [
-      '## Tool Contract',
-      '唯一工具是 `history-fetch`。',
-      '用途：按人、关键词、时间范围或最近 N 条补充聊天上下文。',
-      '时间范围优先使用结构化的 `timeRange` 对象。',
-      '像 `上周`、`本周`、`本月`、`今天` 这类相对时间，'
-      + '优先用 `timeRange: { "mode": "preset",'
-      + ' "value": "lastWeek" | "thisWeek" | "thisMonth" | "today" | "yesterday" }`。',
-      '只有用户明确给出具体日期时，才用 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
-      '只使用结构化参数，不要根据用户问题里的字面词做路由判断。',
-      '`toolArgs` 是首选；`toolQueryHints` 也必须是结构化对象，作为补充线索。',
-      '如果任务是在找名字、称呼、术语或提法，`toolQueryHints` 里优先提供结构化 `keyword`。',
-    ],
-    [
-      '## Output Style',
-      '请用 Telegram 群聊风格回答：短句优先，必要时用要点列表，避免长篇报告。',
-      '如果适合直接发到群里，就优先给出可以直接转发到群里的话术或摘要。',
-      '回答通用事实题时，优先用这个顺序：1. 先直接给结论；2. 再说聊天记录里有没有直接证据；3. 如果用了常识或模型知识，明确说明这部分不是来自当前聊天记录。',
-      '避免把“信息不够完整”“需要继续检索”当成最终回答的结尾；除非你下一步真的会立刻调用工具。',
-      'Markdown 只用于提高可读性，不要为了排版堆砌标题；重点内容可以用加粗或列表强调。',
-      '如果信息还不够，直接说明缺口并继续检索，不要编造。',
-      '默认使用简体中文，除非用户明确要求其他语言。',
-    ],
-  );
-}
-
-export function buildAiFinalAnswerSystemPrompt(timeContext?: AiPromptTimeContext) {
-  return joinPromptBlocks(
-    [
-      '## Identity',
-      '你是 Telegram AI 聊天助手，负责基于已有上下文给出最终答案。',
-    ],
-    buildAiTimeContextBlock(timeContext),
-    [
-      '## Final Answer Mode',
-      '当前阶段不能调用任何工具。',
-      '不要输出 tool call，不要请求继续检索，也不要把回答停在“需要继续检索”这句话上。',
-      '如果用户问的是通用事实或背景知识，而当前聊天记录没有直接答案，可以直接基于模型已有知识回答，但要明确说明这部分不是来自当前聊天记录。',
-    ],
-    [
-      '## Output Style',
-      '请用 Telegram 群聊风格回答：短句优先，必要时用要点列表。',
-      '优先顺序：1. 先直接给结论；2. 再说聊天记录里有没有直接证据；3. 如果用了常识或模型知识，明确说明这部分不是来自当前聊天记录。',
-    ],
-  );
 }
 
 export function clampAiContextLimit(limit: number | undefined, fallback = AI_CONTEXT_LIMIT_DEFAULT) {
@@ -423,6 +331,45 @@ export function buildPersistentAiHistoryMessages(
 function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefined {
   type PresetTimeRangeValue = Extract<TimeRange, { mode: 'preset' }>['value'];
 
+  const normalizeTimeValue = (input: unknown, boundary: 'start' | 'end' = 'start') => {
+    if (typeof input === 'string') {
+      const trimmed = input.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+
+      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dateOnlyMatch) {
+        const year = Number(dateOnlyMatch[1]);
+        const month = Number(dateOnlyMatch[2]);
+        const day = Number(dateOnlyMatch[3]);
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+          return undefined;
+        }
+
+        const date = new Date(year, month - 1, day);
+        if (boundary === 'end') {
+          date.setDate(date.getDate() + 1);
+        }
+        return date.getTime();
+      }
+
+      const parsed = Date.parse(trimmed);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+
+      return undefined;
+    }
+
+    const numeric = Number(input);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return undefined;
+    }
+
+    return numeric < 1e12 ? numeric * 1000 : numeric;
+  };
+
   const normalizePreset = (
     preset: unknown,
   ): { mode: 'preset'; value: PresetTimeRangeValue } | undefined => {
@@ -475,19 +422,24 @@ function normalizeHistoryFetchTimeRangeHint(value: unknown): TimeRange | undefin
   }
 
   const candidate = value as Record<string, unknown>;
-  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
-  if (candidate.mode === 'preset' && preset) {
-    return preset;
-  }
-
-  const startAt = Number(candidate.startAt ?? candidate.start ?? candidate.from);
-  const endAt = Number(candidate.endAt ?? candidate.end ?? candidate.to);
-  if (Number.isFinite(startAt) && Number.isFinite(endAt) && startAt >= 0 && endAt > startAt) {
+  const startAt = normalizeTimeValue(
+    candidate.startAt ?? candidate.start ?? candidate.from ?? candidate.startTime ?? candidate.fromDate,
+  );
+  const endAt = normalizeTimeValue(
+    candidate.endAt ?? candidate.end ?? candidate.to ?? candidate.endTime ?? candidate.toDate,
+    'end',
+  );
+  if (startAt && endAt && endAt > startAt) {
     return {
       mode: 'custom',
       startAt,
       endAt,
     };
+  }
+
+  const preset = normalizePreset(candidate.value ?? candidate.preset ?? candidate.range);
+  if (candidate.mode === 'preset' && preset) {
+    return preset;
   }
 
   const days = Number(candidate.days ?? candidate.dayCount);
@@ -552,14 +504,6 @@ function normalizeHistoryFetchQueryHint(
     Number(candidate.limit ?? candidate.count ?? candidate.maxResults),
     fallbackLimit,
   );
-  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim().toLowerCase() : undefined;
-
-  if (mode === 'recent') {
-    return {
-      mode: 'recent' as const,
-      limit,
-    };
-  }
 
   if (keyword || person || timeRange) {
     return {
@@ -578,7 +522,6 @@ type NormalizedHistoryFetchQueryHint = {
   person?: PersonRef;
   timeRange?: TimeRange;
   limit?: number;
-  mode?: 'recent';
 };
 
 export function buildHistoryFetchQueryFromToolHints(args: {
@@ -635,12 +578,6 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       };
     }
 
-    if ('mode' in normalized && normalized.mode === 'recent') {
-      return {
-        mode: 'recent',
-        limit: normalized.limit || clampMessageFetchLimit(undefined, defaultLimit),
-      };
-    }
   }
 
   const hints = [
@@ -651,7 +588,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
   let keywordQuery: NormalizedHistoryFetchQueryHint | undefined;
   let personQuery: PersonRef | undefined;
   let timeRangeQuery: TimeRange | undefined;
-  let recentLimit: number | undefined;
+  let queryLimit: number | undefined;
 
   for (const hint of hints) {
     const normalized = normalizeHistoryFetchQueryHint(hint, defaultLimit);
@@ -677,12 +614,8 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       timeRangeQuery = normalized.timeRange;
     }
 
-    if ('mode' in normalized && normalized.mode === 'recent') {
-      recentLimit = normalized.limit;
-    }
-
     if ('limit' in normalized && normalized.limit) {
-      recentLimit = normalized.limit;
+      queryLimit = normalized.limit;
     }
   }
 
@@ -701,7 +634,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
       mode: 'person',
       person: personQuery,
       ...(timeRangeQuery ? { timeRange: timeRangeQuery } : {}),
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
+      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
     };
   }
 
@@ -709,14 +642,7 @@ export function buildHistoryFetchQueryFromToolHints(args: {
     return {
       mode: 'range',
       timeRange: timeRangeQuery,
-      ...(recentLimit ? { limit: recentLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
-    };
-  }
-
-  if (recentLimit) {
-    return {
-      mode: 'recent',
-      limit: recentLimit || clampMessageFetchLimit(undefined, defaultLimit),
+      ...(queryLimit ? { limit: queryLimit } : { limit: clampMessageFetchLimit(undefined, defaultLimit) }),
     };
   }
 
@@ -889,7 +815,7 @@ export function formatHistoryFetchPageProgress(
     title: `第 ${pageIndex} 页`,
     detail: [
       localCount ? `本地 ${localCount} 条` : undefined,
-      `远程新增 ${accumulatedCount} 条`,
+      `新增 ${accumulatedCount} 条`,
       `累计可用 ${totalAvailable} 条`,
       `本页 ${result.total} 条`,
       dateRange,
@@ -902,7 +828,7 @@ export function formatHistoryFetchPageProgress(
 
 export function formatHistoryFetchFloodWaitProgress(seconds: number) {
   return {
-    title: 'Telegram 限流',
+    title: '检索限流',
     detail: `等待 ${seconds} 秒后继续抓取`,
   };
 }
@@ -913,6 +839,7 @@ export function buildHistoryFetchFallbackAnswer(
 ) {
   const scopeLabel = describeRawExportQuery(query);
   const messages = result.messages.filter((message) => message.text?.trim());
+  const isSparseRangeSummary = query.mode === 'range' && result.total > 0 && result.total <= 2;
   const senderCounts = new Map<string, number>();
   const dayCounts = new Map<string, number>();
 
@@ -936,6 +863,15 @@ export function buildHistoryFetchFallbackAnswer(
 
   const exampleLines = messages.slice(0, 5)
     .map((message) => `- [${formatAiPromptTimestamp(message.date)}] ${message.sender}: ${message.text.trim()}`);
+
+  if (isSparseRangeSummary) {
+    return [
+      `已读取${scopeLabel}的聊天记录，但当前聊天在这段时间里本地只找到 ${result.total} 条消息。`,
+      '这不能代表这段时间的完整话题。',
+      '如果你是想看整周都聊了什么，建议先同步更多历史再继续分析。',
+      exampleLines.length ? ['目前能看到的原话：', ...exampleLines].join('\n') : undefined,
+    ].filter(Boolean).join('\n');
+  }
 
   return [
     `已读取${scopeLabel}的聊天记录，共 ${result.total} 条。`,
@@ -1053,6 +989,24 @@ export function buildAiConversationMessages(args: {
       content: currentPrompt,
     }] : []),
   ] as AiChatMessage[];
+}
+
+export function resolveAiConversationTurnsForRequest(args: {
+  isFirstConversationTurn: boolean;
+  historyMessages?: AiChatMessage[];
+  turns: AiChatMessage[];
+}) {
+  const {
+    isFirstConversationTurn,
+    historyMessages,
+    turns,
+  } = args;
+
+  if (isFirstConversationTurn) {
+    return [] as AiChatMessage[];
+  }
+
+  return historyMessages?.length ? historyMessages : turns;
 }
 
 export type OpenAiCompatibleMessage = {
