@@ -31,7 +31,7 @@ function formatPromptCurrentDateTime(now: number, timeZone?: string) {
     hour12: false,
   });
 
-  return formatter.format(new Date(now)).replace(' ', ' ');
+  return formatter.format(new Date(now));
 }
 
 function buildAiTimeContextBlock({ now = Date.now(), timeZone }: AiPromptTimeContext = {}) {

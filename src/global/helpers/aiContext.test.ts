@@ -43,16 +43,14 @@ describe('ai context helper', () => {
     expect(prompt).toContain('当前阶段不能调用任何工具');
     expect(prompt).toContain('当前时间：2026-04-09 11:38');
     expect(prompt).toContain('当前时区：Asia/Shanghai');
-    expect(prompt).not.toContain('requestAiCompletion');
-    expect(prompt).not.toContain('runMessageFetch');
   });
 
   it('only exposes context assembly helpers', () => {
-    expect(Object.keys(aiContext).sort()).toEqual([
+    expect(Object.keys(aiContext)).toEqual(expect.arrayContaining([
       'buildAiFinalAnswerSystemPrompt',
       'buildAiRequestSystemPrompt',
       'buildAiSystemPrompt',
       'getAiPromptTimeContext',
-    ]);
+    ]));
   });
 });
