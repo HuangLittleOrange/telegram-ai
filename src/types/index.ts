@@ -108,6 +108,14 @@ export type ThreadId = string | number;
 export type ThemeKey = 'light' | 'dark';
 export type AnimationLevel = 0 | 1 | 2;
 export type FoldersPosition = 'top' | 'left';
+export type AiProvider = 'openai' | 'anthropic' | 'gemini';
+export type AiSettings = {
+  provider: AiProvider;
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  defaultContextLimit: number;
+};
 export type PerformanceTypeKey = (
   'pageTransitions' | 'messageSendingAnimations' | 'mediaViewerAnimations'
   | 'messageComposerAnimations' | 'contextMenuAnimations' | 'contextMenuBlur' | 'messageBlur'
@@ -165,6 +173,7 @@ export interface AccountSettings {
   translationLanguage?: string;
   doNotTranslate: string[];
   shouldPaidMessageAutoApprove: boolean;
+  aiSettings: AiSettings;
 }
 
 export type IAnchorPosition = {
@@ -272,6 +281,7 @@ export enum SettingsScreens {
   DoNotTranslate,
   FoldersShare,
   Passkeys,
+  Ai,
 }
 
 export type StickerSetOrReactionsSetOrRecent = Pick<ApiStickerSet, (
@@ -305,6 +315,7 @@ export enum GlobalSearchContent {
 
 export enum RightColumnContent {
   ChatInfo,
+  AiAssistant,
   Management,
   Statistics,
   BoostStatistics,
@@ -646,6 +657,12 @@ export interface ThreadLocalState {
   typingStatus?: ApiTypingStatus;
 
   typingDraftIdByRandomId?: Record<string, number>;
+
+  fetchedMessageRangeCoverages?: {
+    startAt: number;
+    endAt: number;
+    completedAt?: number;
+  }[];
 }
 
 export interface Thread {

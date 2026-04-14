@@ -33,6 +33,7 @@ import {
   isMessageLocal,
 } from '../../helpers';
 import { getMessageReplyInfo, getStoryReplyInfo } from '../../helpers/replies';
+import { persistRealtimeMessageToSyncedStore } from '../../helpers/syncedMessagesRealtime';
 import {
   addActionHandler,
   getGlobal,
@@ -247,6 +248,12 @@ addActionHandler('apiUpdate', (global, actions, update): ActionReturnType => {
       }
 
       setGlobal(global);
+      persistRealtimeMessageToSyncedStore({
+        global,
+        chatId,
+        message: newMessage,
+        isLocal,
+      });
 
       // Reload dialogs if chat is not present in the list
       if (!isLocal && !chat?.isNotJoined && !selectIsChatListed(global, chatId)) {
@@ -592,6 +599,12 @@ addActionHandler('apiUpdate', (global, actions, update): ActionReturnType => {
       }
 
       setGlobal(global);
+      persistRealtimeMessageToSyncedStore({
+        global,
+        chatId,
+        message: newMessage,
+        isLocal: false,
+      });
 
       break;
     }

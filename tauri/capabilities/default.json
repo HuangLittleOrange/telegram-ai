@@ -10,6 +10,7 @@
     "notification:allow-is-permission-granted",
     "notification:allow-notify",
     "notification:allow-request-permission",
-    "shell:default"
+    "shell:default",
+    "sql:default"
   ]
 }

@@ -58,8 +58,19 @@ function parseToolCallArguments(argumentsText: string) {
   }
 }
 
-export function shouldOfferHistoryFetchTool(messages: AiChatMessage[]) {
-  return !messages.some((message) => message.role === 'tool');
+export function shouldOfferHistoryFetchTool(
+  messages: AiChatMessage[],
+  maxToolRounds = 3,
+) {
+  const normalizedMaxToolRounds = Number.isFinite(maxToolRounds) && maxToolRounds > 0
+    ? Math.floor(maxToolRounds)
+    : 1;
+  const usedToolRounds = messages.filter((message) => (
+    message.role === 'tool'
+    && (!message.name || message.name === 'history-fetch')
+  )).length;
+
+  return usedToolRounds < normalizedMaxToolRounds;
 }
 
 export function formatHistoryFetchToolResultForModel(
@@ -124,13 +135,9 @@ export type ExecuteHistoryFetchToolCallArgs = {
   now?: number;
   executeQuery: (args: {
     query: MessageFetchQuery;
-    onRemotePageFetched?: (pageResult: MessageFetchResult) => void;
-    onRemoteFloodWait?: (seconds: number) => void;
   }) => Promise<MessageFetchResult>;
   onQueryStart?: (query: MessageFetchQuery) => void;
   onQueryResult?: (query: MessageFetchQuery, result: MessageFetchResult) => void;
-  onRemotePageFetched?: (pageResult: MessageFetchResult) => void;
-  onRemoteFloodWait?: (seconds: number) => void;
   createdAt?: number;
 };
 
@@ -152,8 +159,6 @@ export async function executeHistoryFetchToolCall(
     executeQuery,
     onQueryStart,
     onQueryResult,
-    onRemotePageFetched,
-    onRemoteFloodWait,
     createdAt = Date.now(),
   } = args;
 
@@ -168,8 +173,6 @@ export async function executeHistoryFetchToolCall(
 
   const result = await executeQuery({
     query,
-    onRemotePageFetched,
-    onRemoteFloodWait,
   });
 
   onQueryResult?.(query, result);

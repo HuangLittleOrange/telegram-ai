@@ -240,9 +240,45 @@ export async function finishTakeoutSessionForSync({ success = true }: { success?
   });
 }
 
+function hasTakeoutRangeApiSupport() {
+  const api = GramJs as any;
+  return Boolean(
+    api?.messages?.GetSplitRanges
+    && api?.InvokeWithMessagesRange
+    && api?.MessageRange,
+  );
+}
+
+export async function getTakeoutSplitRangesForSync() {
+  if (!hasTakeoutRangeApiSupport()) {
+    return [];
+  }
+
+  const ranges = await invokeRequest(new GramJs.messages.GetSplitRanges(), {
+    shouldThrow: true,
+  });
+
+  if (!ranges?.length) {
+    return [];
+  }
+
+  return ranges
+    .filter((range): range is GramJs.MessageRange => (
+      Boolean(range)
+      && Number.isFinite(range.minId)
+      && Number.isFinite(range.maxId)
+      && range.maxId >= range.minId
+    ))
+    .map((range) => ({
+      minId: range.minId,
+      maxId: range.maxId,
+    }));
+}
+
 export async function fetchMessagesWithTakeout({
   chat,
   takeoutId,
+  range,
   threadId,
   offsetId,
   isSavedDialog,
@@ -251,6 +287,10 @@ export async function fetchMessagesWithTakeout({
 }: {
   chat: ApiChat;
   takeoutId: string;
+  range?: {
+    minId: number;
+    maxId: number;
+  };
   threadId?: ThreadId;
   offsetId?: number;
   isSavedDialog?: boolean;
@@ -275,11 +315,20 @@ export async function fetchMessagesWithTakeout({
     addOffset: addOffset ?? DEFAULT_PRIMITIVES.INT,
     limit,
   });
+  const query = (range && hasTakeoutRangeApiSupport())
+    ? new GramJs.InvokeWithMessagesRange({
+      range: new GramJs.MessageRange({
+        minId: range.minId,
+        maxId: range.maxId,
+      }),
+      query: historyRequest,
+    })
+    : historyRequest;
 
   try {
     result = await invokeRequest(new GramJs.InvokeWithTakeout({
       takeoutId: BigInt(takeoutId),
-      query: historyRequest,
+      query,
     }), {
       shouldThrow: true,
       abortControllerChatId: chat.id,
@@ -2153,6 +2202,108 @@ export async function findFirstMessageIdAfterDate({
   }
 
   return result.messages[0].id;
+}
+
+function getOldestMessageDate(messages: ApiMessage[]) {
+  const dates = messages
+    .map((message) => message.date)
+    .filter((date): date is number => Number.isFinite(date));
+
+  if (!dates.length) {
+    return undefined;
+  }
+
+  return Math.min(...dates);
+}
+
+function getNextHistoryCursor(messages: ApiMessage[]) {
+  const messageIds = messages
+    .map((message) => message.id)
+    .filter((messageId): messageId is number => Number.isFinite(messageId) && messageId > 0);
+
+  if (!messageIds.length) {
+    return undefined;
+  }
+
+  const oldestMessageId = Math.min(...messageIds);
+  return oldestMessageId > 1 ? oldestMessageId - 1 : oldestMessageId;
+}
+
+export async function countMessagesInChatRange({
+  chat,
+  threadId,
+  isSavedDialog,
+  startDate,
+  endDate,
+  limit = 100,
+}: {
+  chat: ApiChat;
+  threadId?: ThreadId;
+  isSavedDialog?: boolean;
+  startDate: number;
+  endDate: number;
+  limit?: number;
+}) {
+  if (!Number.isFinite(startDate) || !Number.isFinite(endDate) || startDate >= endDate) {
+    return {
+      totalCount: 0,
+    };
+  }
+
+  let totalCount = 0;
+  let stalledCursorCount = 0;
+  let cursorMessageId = await findFirstMessageIdAfterDate({
+    chat,
+    timestamp: endDate,
+  });
+
+  while (true) {
+    const page = await fetchMessages({
+      chat,
+      threadId,
+      isSavedDialog,
+      offsetId: cursorMessageId,
+      addOffset: 0,
+      limit,
+    });
+
+    if (!page?.messages?.length) {
+      break;
+    }
+
+    const inRangeMessages = page.messages.filter((message) => (
+      message.date >= startDate && message.date < endDate
+    ));
+    totalCount += inRangeMessages.length;
+
+    const oldestPageDate = getOldestMessageDate(page.messages);
+    if (oldestPageDate !== undefined && oldestPageDate < startDate) {
+      break;
+    }
+
+    const nextCursorMessageId = getNextHistoryCursor(page.messages);
+    if (nextCursorMessageId === undefined) {
+      break;
+    }
+
+    if (cursorMessageId !== undefined && nextCursorMessageId >= cursorMessageId) {
+      stalledCursorCount += 1;
+      if (stalledCursorCount >= 3) {
+        break;
+      }
+    } else {
+      stalledCursorCount = 0;
+    }
+
+    cursorMessageId = nextCursorMessageId;
+    if (cursorMessageId <= 1) {
+      break;
+    }
+  }
+
+  return {
+    totalCount,
+  };
 }
 
 export async function fetchScheduledHistory({ chat }: { chat: ApiChat }) {

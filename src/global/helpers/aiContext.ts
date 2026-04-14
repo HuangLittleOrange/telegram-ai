@@ -71,6 +71,8 @@ export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
       '工具用途：按目标（人物、关键词）和时间范围补充当前群聊上下文。',
       '参数构造规则（严格遵守）：',
       '- 默认范围：默认读取当前聊天；未显式指定目标对象时，仅限检索当前聊天，非全局。',
+      '- 组合筛选：`keyword`、`person`、`timeRange` 可以组合使用，不是互斥路由。',
+      '- 关键词语义：`keyword` 走模糊匹配，会同时匹配“消息内容 + 发言人名称”。',
       '- 时间精准换算：遇到模糊时间（如“上周”、“昨天”、“本月”），必须基于当前时间精准换算为具体的 `fromDate` 和 `toDate`（格式 YYYY-MM-DD）；其中“周”按自然周（周一到周日）计算。',
       '- 不要传 `preset`；只使用结构化参数 `fromDate` 和 `toDate`。',
       '- 优先结构化：参数首选 `toolArgs`。寻找特定名词/称呼时，必须在 `toolQueryHints` 中提供结构化的 `keyword` 作为补充线索。禁止基于字面词进行主观路由判断。',

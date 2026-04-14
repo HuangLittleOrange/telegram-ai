@@ -54,6 +54,7 @@ import { getIsMobile } from '../hooks/useAppLayout';
 
 const UPDATE_THROTTLE = 5000;
 const MESSAGE_CACHE_THREAD_LIMIT = MESSAGE_LIST_VIEWPORT_LIMIT * 3;
+const MESSAGE_CACHE_THREAD_LIMIT_SYNC_EXPANDED_MAX = 50000;
 
 const updateCacheThrottled = throttle(() => onFullyIdle(() => updateCache()), UPDATE_THROTTLE, false);
 const updateCacheForced = () => updateCache(true);
@@ -391,6 +392,10 @@ function unsafeMigrateCache(cached: GlobalState, initialState: GlobalState) {
   if (!cached.chatSync) {
     cached.chatSync = initialState.chatSync;
   }
+
+  if (!cached.aiAssistantSessions) {
+    cached.aiAssistantSessions = initialState.aiAssistantSessions;
+  }
 }
 
 function updateCache(force?: boolean) {
@@ -451,6 +456,7 @@ function reduceGlobal<T extends GlobalState>(global: T) {
       'serviceNotifications',
       'attachmentSettings',
       'leftColumnWidth',
+      'rightColumnWidth',
       'archiveSettings',
       'mediaViewer',
       'audioPlayer',
@@ -462,6 +468,7 @@ function reduceGlobal<T extends GlobalState>(global: T) {
       'timezones',
       'availableEffectById',
       'chatSync',
+      'aiAssistantSessions',
     ]),
     lastIsChatInfoShown: !getIsMobile() ? global.lastIsChatInfoShown : undefined,
     stickers: reduceStickers(global),
@@ -703,13 +710,21 @@ function reduceMessages<T extends GlobalState>(global: T): GlobalState['messages
 
     const topics = selectTopics(global, chatId);
     const threadsToSave = pickTruthy(current.threadsById, [MAIN_THREAD_ID, ...threadIds]);
+    const syncState = global.chatSync.byChatId[chatId];
+    const syncedMessages = syncState?.syncedMessages || 0;
+    const perChatMessageCacheLimit = syncState?.hasSyncedOnce
+      ? Math.min(
+        Math.max(MESSAGE_CACHE_THREAD_LIMIT, syncedMessages),
+        MESSAGE_CACHE_THREAD_LIMIT_SYNC_EXPANDED_MAX,
+      )
+      : MESSAGE_CACHE_THREAD_LIMIT;
 
     const viewportIdsToSave = unique(Object.values(threadsToSave)
       .flatMap((thread) => thread.localState?.lastViewportIds || []));
     const messageIdsToSave = collectMessageIdsToCache(
       current.byId,
       (message) => [MAIN_THREAD_ID, ...threadIds].includes(selectThreadIdFromMessage(global, message)),
-      MESSAGE_CACHE_THREAD_LIMIT,
+      perChatMessageCacheLimit,
     );
     const topicLastMessageIds = topics && forumPanelChatIds.includes(chatId)
       ? Object.values(topics).map(({ id }) => selectThreadInfo(global, chatId, id)?.lastMessageId).filter(Boolean) : [];

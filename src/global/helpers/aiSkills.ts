@@ -23,10 +23,13 @@ export type AiSkillInvocation =
 export const AI_SKILL_GUIDANCE = [
   '可用技能/工具：`history-fetch`。',
   '用途：从当前聊天的本地已同步消息中按人、按关键词、按时间范围获取消息，用来补充上下文。',
+  '筛选可组合：`keyword`、`person`、`timeRange` 可以叠加，不是互斥关系。',
+  '关键词规则：`keyword` 采用模糊匹配，既会匹配消息内容，也会匹配发言人名称。',
   '限制：不会触发远程拉取，只读取本地已同步数据。',
   '未显式指定对象时，默认读取当前聊天，不是全局所有对话。',
   '时间范围优先使用结构化的 `timeRange` 对象。',
-  '当用户使用 `上周`、`本周`、`本月`、`昨天`、`今天` 这类模糊时间时，先基于当前时间准确换算，再传 `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
+  '当用户使用 `上周`、`本周`、`本月`、`昨天`、`今天` 这类模糊时间时，先基于当前时间准确换算，再传'
+  + ' `timeRange: { "fromDate": "YYYY-MM-DD", "toDate": "YYYY-MM-DD" }`。',
   '其中 `上周`、`本周` 按自然周（周一到周日）理解。',
   '不要传 `preset`；统一使用 `fromDate` 和 `toDate`。',
   '调用前先明确你缺什么信息，再为工具准备结构化查询参数。',
@@ -46,16 +49,18 @@ export function buildHistoryFetchToolDefinition() {
     type: 'function' as const,
     function: {
       name: 'history-fetch',
-      description: 'Fetch local synced Telegram chat history by person, keyword, or time range.',
+      description: 'Fetch local synced Telegram chat history with combinable filters (keyword/person/timeRange).',
       parameters: {
         type: 'object',
         properties: {
           mode: {
             type: 'string',
             enum: ['person', 'keyword', 'range'],
+            description: 'Primary retrieval intent. Filters can still be combined with keyword/person/timeRange.',
           },
           person: {
             type: 'object',
+            description: 'Optional sender filter. Can be combined with keyword or timeRange.',
             properties: {
               peerId: { type: 'string' },
               title: { type: 'string' },
@@ -63,9 +68,13 @@ export function buildHistoryFetchToolDefinition() {
             required: ['peerId'],
             additionalProperties: true,
           },
-          keyword: { type: 'string' },
+          keyword: {
+            type: 'string',
+            description: 'Fuzzy keyword that matches both message text and sender display name.',
+          },
           timeRange: {
             type: 'object',
+            description: 'Optional time filter. Can be combined with keyword/person.',
             properties: {
               fromDate: {
                 type: 'string',
@@ -278,6 +287,29 @@ export function applyRelativeTimeRangeOverrideFromPrompt(args: {
 }
 
 function normalizeHistoryFetchPersonHint(value: unknown): PersonRef | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const normalized = normalizeHistoryFetchPersonHint(item);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    return {
+      peerId: trimmed,
+      title: trimmed,
+    };
+  }
+
   if (!value || typeof value !== 'object') {
     return undefined;
   }

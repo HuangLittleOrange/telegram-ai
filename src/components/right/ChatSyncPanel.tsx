@@ -1,9 +1,8 @@
-import { memo, useEffect, useMemo, useState } from '../../lib/teact/teact';
+import { memo, useEffect, useMemo } from '../../lib/teact/teact';
 import { getActions, withGlobal } from '../../global';
 
 import type { ApiChat } from '../../api/types';
 import type { ChatSyncState } from '../../global/types';
-import type { TimeRange } from '../../global/types/tabState';
 import type { ThreadId } from '../../types';
 import { MAIN_THREAD_ID } from '../../api/types';
 
@@ -25,43 +24,43 @@ type StateProps = {
   syncState: ChatSyncState;
 };
 
-type RangeOption = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'custom';
+function summarizeSyncErrorDetail(detail?: string, maxLength = 180) {
+  if (!detail) {
+    return undefined;
+  }
 
-const PRESET_LABELS: Record<Exclude<RangeOption, 'all' | 'custom'>, string> = {
-  today: '今天',
-  yesterday: '昨天',
-  thisWeek: '本周',
-  lastWeek: '上周',
-  thisMonth: '本月',
-};
+  const compact = detail.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return undefined;
+  }
 
-function toDateTimeLocalValue(timestamp: number) {
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+
+  return `${compact.slice(0, maxLength)}...`;
+}
+
+function resolveDisplayedSyncErrorCode(errorCode?: string, detail?: string) {
+  const text = `${errorCode || ''} ${detail || ''}`;
+  if (/TeactN\.setGlobal|Attempt to set an outdated global|outdated global/i.test(text)) {
+    return 'SYNC_STATE_OUTDATED';
+  }
+
+  return errorCode;
+}
+
+function formatDateOnly(timestamp?: number) {
+  if (!timestamp) {
+    return '暂无';
+  }
+
   const date = new Date(timestamp);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
 
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
-function getRangeOption(range?: TimeRange): RangeOption {
-  if (!range) {
-    return 'all';
-  }
-
-  if (range.mode === 'custom') {
-    return 'custom';
-  }
-
-  return range.value;
-}
-
-function getDefaultCustomRange() {
-  const endAt = Date.now();
-  const startAt = endAt - 7 * 24 * 60 * 60 * 1000;
-  return { startAt, endAt };
+  return `${year}-${month}-${day}`;
 }
 
 const ChatSyncPanel = ({
@@ -73,7 +72,6 @@ const ChatSyncPanel = ({
   const {
     loadChatSyncStats,
     setChatSyncMethod,
-    setChatSyncTimeRange,
     startChatSync,
     pauseChatSync,
     resetChatSync,
@@ -81,40 +79,23 @@ const ChatSyncPanel = ({
 
   const isSupportedChat = Boolean(chat && (isChatGroup(chat) || isChatChannel(chat)));
   const resolvedThreadId = threadId || MAIN_THREAD_ID;
-  const selectedRangeOption = getRangeOption(syncState.selectedTimeRange);
-
-  const [customStartAt, setCustomStartAt] = useState(() => (
-    syncState.selectedTimeRange?.mode === 'custom'
-      ? syncState.selectedTimeRange.startAt
-      : getDefaultCustomRange().startAt
-  ));
-  const [customEndAt, setCustomEndAt] = useState(() => (
-    syncState.selectedTimeRange?.mode === 'custom'
-      ? syncState.selectedTimeRange.endAt
-      : getDefaultCustomRange().endAt
-  ));
 
   useEffect(() => {
     if (!isSupportedChat) return;
     loadChatSyncStats({ chatId, threadId: resolvedThreadId });
   }, [chatId, isSupportedChat, loadChatSyncStats, resolvedThreadId]);
 
-  useEffect(() => {
-    if (syncState.selectedTimeRange?.mode !== 'custom') {
-      return;
-    }
-
-    setCustomStartAt(syncState.selectedTimeRange.startAt);
-    setCustomEndAt(syncState.selectedTimeRange.endAt);
-  }, [syncState.selectedTimeRange]);
+  const isRangeScopedSync = syncState.selectedTimeRange?.mode === 'custom';
+  const hasReliableScopedTotal = syncState.scopedTotalMessages !== undefined;
 
   const progress = useMemo(() => {
-    if (!syncState.totalMessages) {
+    const progressBaseTotal = isRangeScopedSync ? syncState.scopedTotalMessages : syncState.totalMessages;
+    if (!progressBaseTotal) {
       return 0;
     }
 
-    return Math.max(0, Math.min(100, Math.round((syncState.syncedMessages / syncState.totalMessages) * 100)));
-  }, [syncState.syncedMessages, syncState.totalMessages]);
+    return Math.max(0, Math.min(100, Math.round((syncState.syncedMessages / progressBaseTotal) * 100)));
+  }, [isRangeScopedSync, syncState.scopedTotalMessages, syncState.syncedMessages, syncState.totalMessages]);
 
   const statusText = useMemo(() => {
     switch (syncState.status) {
@@ -132,52 +113,11 @@ const ChatSyncPanel = ({
     }
   }, [syncState.status]);
 
-  const oldestSyncedDateText = syncState.oldestSyncedDate
-    ? new Date(syncState.oldestSyncedDate).toLocaleString()
-    : '暂无';
-
-  const handleRangeSelect = (option: RangeOption) => {
-    if (option === 'all') {
-      setChatSyncTimeRange({ chatId, timeRange: undefined });
-      return;
-    }
-
-    if (option === 'custom') {
-      const customRange = syncState.selectedTimeRange?.mode === 'custom'
-        ? syncState.selectedTimeRange
-        : {
-          mode: 'custom' as const,
-          ...getDefaultCustomRange(),
-        };
-      setCustomStartAt(customRange.startAt);
-      setCustomEndAt(customRange.endAt);
-      setChatSyncTimeRange({ chatId, timeRange: customRange });
-      return;
-    }
-
-    setChatSyncTimeRange({
-      chatId,
-      timeRange: {
-        mode: 'preset',
-        value: option,
-      },
-    });
-  };
-
-  const handleApplyCustomRange = () => {
-    if (!customStartAt || !customEndAt || customStartAt >= customEndAt) {
-      return;
-    }
-
-    setChatSyncTimeRange({
-      chatId,
-      timeRange: {
-        mode: 'custom',
-        startAt: customStartAt,
-        endAt: customEndAt,
-      },
-    });
-  };
+  const syncedRangeStartTimestamp = syncState.oldestSyncedDate;
+  const syncedRangeStartText = formatDateOnly(syncedRangeStartTimestamp);
+  const syncedRangeEndText = formatDateOnly(syncState.newestSyncedDate);
+  const syncErrorDetail = summarizeSyncErrorDetail(syncState.errorDetail);
+  const syncErrorCode = resolveDisplayedSyncErrorCode(syncState.errorCode, syncState.errorDetail);
 
   if (!isSupportedChat) {
     return undefined;
@@ -219,100 +159,77 @@ const ChatSyncPanel = ({
         </div>
       )}
 
-      <div className="range-selector">
-        <label className="range-label" htmlFor={`chat-sync-range-${chatId}`}>时间范围</label>
-        <select
-          id={`chat-sync-range-${chatId}`}
-          className="range-select"
-          value={selectedRangeOption}
-          onChange={(e) => handleRangeSelect(e.currentTarget.value as RangeOption)}
-          disabled={syncState.status === 'syncing'}
-        >
-          <option value="all">全部时间</option>
-          <option value="today">{PRESET_LABELS.today}</option>
-          <option value="yesterday">{PRESET_LABELS.yesterday}</option>
-          <option value="thisWeek">{PRESET_LABELS.thisWeek}</option>
-          <option value="lastWeek">{PRESET_LABELS.lastWeek}</option>
-          <option value="thisMonth">{PRESET_LABELS.thisMonth}</option>
-          <option value="custom">自定义</option>
-        </select>
+      <div className="metrics">
+        <span>
+          总量：
+          {syncState.totalMessages || 0}
+        </span>
+        <span>
+          已同步：
+          {syncState.syncedMessages}
+        </span>
       </div>
 
-      {selectedRangeOption === 'custom' && (
-        <div className="custom-range">
-          <input
-            className="custom-input"
-            type="datetime-local"
-            value={toDateTimeLocalValue(customStartAt)}
-            onChange={(e) => setCustomStartAt(new Date(e.currentTarget.value).getTime())}
-            disabled={syncState.status === 'syncing'}
-          />
-          <span className="custom-separator">到</span>
-          <input
-            className="custom-input"
-            type="datetime-local"
-            value={toDateTimeLocalValue(customEndAt)}
-            onChange={(e) => setCustomEndAt(new Date(e.currentTarget.value).getTime())}
-            disabled={syncState.status === 'syncing'}
-          />
-          <Button
-            size="smaller"
-            disabled={syncState.status === 'syncing' || customStartAt >= customEndAt}
-            onClick={handleApplyCustomRange}
-          >
-            应用
-          </Button>
+      {(!isRangeScopedSync || hasReliableScopedTotal) && (
+        <div className="progress-track">
+          <div className="progress-fill" style={`width: ${progress}%`} />
         </div>
       )}
 
-      <div className="metrics">
-        <div className="metric-card">
-          <span className="label">总消息数</span>
-          <span className="value">{syncState.totalMessages || 0}</span>
-        </div>
-        <div className="metric-card is-synced">
-          <span className="label">已同步消息</span>
-          <span className="value">{syncState.syncedMessages}</span>
-        </div>
-        <div className="metric-card">
-          <span className="label">未同步消息</span>
-          <span className="value">{syncState.unsyncedMessages}</span>
-        </div>
-      </div>
-
-      <div className="progress-track">
-        <div className="progress-fill" style={`width: ${progress}%`} />
-      </div>
-
       <div className="oldest">
-        最老已同步消息日期：
-        {oldestSyncedDateText}
+        已同步时间：
+        {syncedRangeStartText}
+        {' '}
+        至
+        {' '}
+        {syncedRangeEndText}
       </div>
 
       {syncState.error && (
-        <div className="error">{syncState.error}</div>
+        <div className="error">
+          <div>{syncState.error}</div>
+          {syncErrorCode && (
+            <div className="error-code">
+              错误码：
+              {' '}
+              {syncErrorCode}
+            </div>
+          )}
+          {syncErrorDetail && (
+            <div className="error-detail">
+              详情：
+              {' '}
+              {syncErrorDetail}
+            </div>
+          )}
+        </div>
       )}
 
       <div className="actions">
-        {syncState.status === 'syncing' ? (
-          <Button
-            size="smaller"
-            color="translucent"
-            onClick={() => pauseChatSync({ chatId, threadId: resolvedThreadId })}
-          >
-            暂停同步
-          </Button>
-        ) : (
-          <Button
-            size="smaller"
-            color="primary"
-            onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
-          >
-            {syncState.status === 'paused' ? '继续同步' : '开始同步'}
-          </Button>
-        )}
+        <div className="primary-slot">
+          {syncState.status === 'syncing' ? (
+            <Button
+              className="primary-action"
+              size="tiny"
+              color="translucent"
+              onClick={() => pauseChatSync({ chatId, threadId: resolvedThreadId })}
+            >
+              暂停同步
+            </Button>
+          ) : (
+            <Button
+              className="primary-action"
+              size="tiny"
+              color="primary"
+              onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
+            >
+              {syncState.status === 'paused' ? '继续同步' : '开始同步'}
+            </Button>
+          )}
+        </div>
         <Button
-          size="smaller"
+          className="secondary-action"
+          size="tiny"
           color="translucent"
           onClick={() => {
             resetChatSync({ chatId, threadId: resolvedThreadId });

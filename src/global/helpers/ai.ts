@@ -1,4 +1,3 @@
-import type { AiProvider } from '../../types';
 import type {
   MessageFetchQuery,
   MessageFetchResult,
@@ -36,6 +35,8 @@ export {
 export const AI_CONTEXT_LIMIT_MIN = 20;
 export const AI_CONTEXT_LIMIT_MAX = 500;
 export const AI_CONTEXT_LIMIT_DEFAULT = 100;
+
+type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
 function joinPromptBlocks(...blocks: Array<string | Array<string | undefined> | undefined>) {
   return blocks
@@ -380,7 +381,7 @@ export function formatHistoryFetchPageProgress(
     title: `第 ${pageIndex} 页`,
     detail: [
       localCount ? `本地 ${localCount} 条` : undefined,
-      `远程新增 ${accumulatedCount} 条`,
+      `本地新增 ${accumulatedCount} 条`,
       `累计可用 ${totalAvailable} 条`,
       `本页 ${result.total} 条`,
       dateRange,
@@ -436,33 +437,35 @@ export function buildHistoryFetchFallbackAnswer(
   ].filter(Boolean).join('\n');
 }
 
-function normalizeOpenAiCompatibleUrl(baseUrl: string) {
+function appendEndpointPath(baseUrl: string, endpointPath: string) {
   const trimmedBaseUrl = baseUrl.trim().replace(/\/+$/, '');
 
   if (!trimmedBaseUrl) {
-    return 'https://api.openai.com/v1/chat/completions';
-  }
-
-  if (trimmedBaseUrl.endsWith('/chat/completions')) {
     return trimmedBaseUrl;
   }
 
-  if (trimmedBaseUrl.endsWith('/v1')) {
-    return `${trimmedBaseUrl}/chat/completions`;
+  if (trimmedBaseUrl.endsWith(endpointPath)) {
+    return trimmedBaseUrl;
   }
 
-  return `${trimmedBaseUrl}/v1/chat/completions`;
+  return `${trimmedBaseUrl}${endpointPath}`;
 }
 
-export function getAiApiUrl(provider: AiProvider, baseUrl?: string) {
+export function getAiApiUrl(provider: SupportedAiProvider, baseUrl?: string) {
   const normalizedBaseUrl = baseUrl?.trim();
 
   if (provider === 'gemini') {
     return normalizedBaseUrl || 'https://generativelanguage.googleapis.com/v1beta/models';
   }
 
+  if (provider === 'anthropic') {
+    return normalizedBaseUrl
+      ? appendEndpointPath(normalizedBaseUrl, '/messages')
+      : 'https://api.anthropic.com/v1/messages';
+  }
+
   return normalizedBaseUrl
-    ? normalizeOpenAiCompatibleUrl(normalizedBaseUrl)
+    ? appendEndpointPath(normalizedBaseUrl, '/chat/completions')
     : 'https://api.openai.com/v1/chat/completions';
 }
 
@@ -486,6 +489,15 @@ export function parseOpenAiAssistantRawText(responseJson: any) {
 export function parseGeminiAssistantText(responseJson: any) {
   const text = responseJson?.candidates?.[0]?.content?.parts
     ?.map((part: { text?: string }) => part.text || '')
+    .join('') as string | undefined;
+
+  return sanitizeAssistantText(text);
+}
+
+export function parseAnthropicAssistantText(responseJson: any) {
+  const text = responseJson?.content
+    ?.filter?.((part: { type?: string }) => part.type === 'text')
+    ?.map?.((part: { text?: string }) => part.text || '')
     .join('') as string | undefined;
 
   return sanitizeAssistantText(text);

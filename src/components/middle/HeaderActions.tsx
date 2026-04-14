@@ -139,6 +139,7 @@ const HeaderActions: FC<OwnProps & StateProps> = ({
     requestNextManagementScreen,
     showNotification,
     openChat,
+    toggleAiAssistant,
     requestChatTranslation,
     togglePeerTranslations,
     openChatLanguageModal,
@@ -220,6 +221,10 @@ const HeaderActions: FC<OwnProps & StateProps> = ({
     } else {
       setFocusInSearchInput();
     }
+  });
+
+  const handleOpenAiAssistant = useLastCallback(() => {
+    toggleAiAssistant({ force: true });
   });
 
   const handleAsMessagesClick = useLastCallback(() => {
@@ -399,6 +404,17 @@ const HeaderActions: FC<OwnProps & StateProps> = ({
             >
               {oldLang('Unblock')}
             </Button>
+          )}
+          {canSearch && (
+            <Button
+              round
+              ripple={isRightColumnShown}
+              color="translucent"
+              size="smaller"
+              onClick={handleOpenAiAssistant}
+              ariaLabel="AI Assistant"
+              iconName="bots"
+            />
           )}
           {canSearch && (
             <Button

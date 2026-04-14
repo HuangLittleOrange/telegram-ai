@@ -6,7 +6,6 @@ import {
 } from '../../../lib/teact/teact';
 import { getActions, withGlobal } from '../../../global';
 
-import type { AiProvider } from '../../../types';
 import type { IRadioOption } from '../../ui/RadioGroup';
 
 import useHistoryBack from '../../../hooks/useHistoryBack';
@@ -16,13 +15,15 @@ import InputText from '../../ui/InputText';
 import ListItem from '../../ui/ListItem';
 import RadioGroup from '../../ui/RadioGroup';
 
+type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
+
 type OwnProps = {
   isActive?: boolean;
   onReset: () => void;
 };
 
 type StateProps = {
-  provider: AiProvider;
+  provider: SupportedAiProvider;
   model: string;
   apiKey?: string;
   baseUrl?: string;
@@ -55,6 +56,10 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
         value: 'openai',
       },
       {
+        label: 'Anthropic',
+        value: 'anthropic',
+      },
+      {
         label: 'Gemini',
         value: 'gemini',
       },
@@ -75,7 +80,7 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
   });
 
   const handleProviderChange = useLastCallback((value: string) => {
-    updateAiSettings({ provider: value as AiProvider });
+    updateAiSettings({ provider: value as SupportedAiProvider });
   });
 
   const handleModelChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -136,7 +141,7 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
           onChange={handleBaseUrlChange}
         />
         <p className="section-info">
-          OpenAI-compatible providers can use a root URL like `https://api.minimaxi.com/v1`.
+          OpenAI-compatible URLs auto-append `/chat/completions`; Anthropic URLs auto-append `/messages`.
         </p>
         <ListItem icon="delete" narrow onClick={handleClearKey}>Clear API Key</ListItem>
         <p className="section-info">

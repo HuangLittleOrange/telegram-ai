@@ -7,42 +7,32 @@ import type {
   MessageFetchQuery,
   MessageFetchResult,
   PersonRef,
-  TimeRange,
 } from '../types/tabState';
 import { MAIN_THREAD_ID } from '../../api/types';
 
 import { getCurrentTabId } from '../../util/establishMultitabRole';
 import { getTranslationFn } from '../../util/localization';
-import { pause } from '../../util/schedulers';
-import { callApi } from '../../api/gramjs';
-import { loadCachedGlobal } from '../cache';
 import {
-  selectChat,
   selectCurrentMessageList,
   selectTabState,
-  selectViewportIds,
 } from '../selectors';
-import { selectChatMessages } from '../selectors/messages';
 import { selectSender } from '../selectors/messages';
 import { selectThreadIdFromMessage, selectThreadLocalState } from '../selectors/threads';
-import { getIsSavedDialog } from './chats';
 import { getMessageSummaryText } from './messageSummary';
 import { getPeerTitle } from './peers';
+import { searchMessageIdsByKeywordFts } from './sqliteFtsStore';
+import {
+  getSyncedMessagesByIds,
+  querySyncedMessages,
+} from './syncedMessagesStore';
 
-export const MESSAGE_FETCH_BATCH_SIZE = 100;
-export const MESSAGE_FETCH_MAX_PAGES = 5;
 export const MESSAGE_FETCH_MAX_SCANNED_MESSAGES = 500;
-const TELEGRAM_REMOTE_FETCH_RETRY_ROUNDS = 3;
-const TELEGRAM_REMOTE_FETCH_RETRY_MS = 250;
-const TELEGRAM_REMOTE_FETCH_PAGE_THROTTLE_MS = 250;
 
-type MessageSource = 'live' | 'cache' | 'api';
+type MessageSource = 'live' | 'cache' | 'api' | 'store';
 
 type MessageFetchScope = {
   chatId: string;
-  apiChatId: string;
   threadId: ThreadId;
-  isSavedDialog: boolean;
 };
 
 type CandidateMessage = {
@@ -56,10 +46,16 @@ type NormalizedTimeRange = {
   endSec: number;
 };
 
-type MessageFetchProgressOptions = {
-  onRemotePageFetched?: (result: MessageFetchResult) => void | Promise<void>;
-  onRemoteFloodWait?: (seconds: number) => void | Promise<void>;
-};
+type QueryTimeRange =
+  | {
+    mode: 'custom';
+    startAt: number;
+    endAt: number;
+  }
+  | {
+    mode: 'preset';
+    value: 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth';
+  };
 
 function emptyResult(summary?: string): MessageFetchResult {
   return {
@@ -95,7 +91,7 @@ function compareMessagesAsc(left: ApiMessage, right: ApiMessage) {
   return left.id - right.id;
 }
 
-function normalizeTimeRange(timeRange: TimeRange | undefined): NormalizedTimeRange | undefined {
+function normalizeTimeRange(timeRange: QueryTimeRange | undefined): NormalizedTimeRange | undefined {
   if (!timeRange) {
     return undefined;
   }
@@ -178,13 +174,10 @@ function resolveScope(global: GlobalState, tabId: number): MessageFetchScope | u
 
   const chatId = currentMessageList.chatId;
   const threadId = currentMessageList.threadId || MAIN_THREAD_ID;
-  const isSavedDialog = getIsSavedDialog(chatId, threadId, global.currentUserId);
 
   return {
     chatId,
-    apiChatId: isSavedDialog ? String(threadId) : chatId,
     threadId,
-    isSavedDialog,
   };
 }
 
@@ -205,10 +198,6 @@ function getRequestedLimit(
 function getFetchBudget(limit: number) {
   const normalizedLimit = Math.max(1, Math.floor(limit));
   return {
-    maxPages: Math.max(
-      MESSAGE_FETCH_MAX_PAGES,
-      Math.ceil(normalizedLimit / MESSAGE_FETCH_BATCH_SIZE) + 1,
-    ),
     maxScannedMessages: Math.max(
       MESSAGE_FETCH_MAX_SCANNED_MESSAGES,
       normalizedLimit * 5,
@@ -216,27 +205,14 @@ function getFetchBudget(limit: number) {
   };
 }
 
-function getCandidateIds(global: GlobalState, scope: MessageFetchScope, tabId: number) {
-  const viewportIds = selectViewportIds(global, scope.chatId, scope.threadId, tabId);
-  if (viewportIds?.length) {
-    return viewportIds;
-  }
-
-  const threadState = selectThreadLocalState(global, scope.chatId, scope.threadId);
-  if (threadState?.listedIds?.length) {
-    return threadState.listedIds;
-  }
-
-  if (threadState?.lastViewportIds?.length) {
-    return threadState.lastViewportIds;
-  }
-
-  const messagesById = selectChatMessages(global, scope.chatId);
-  return messagesById ? Object.keys(messagesById).map(Number).sort((a, b) => a - b) : [];
-}
-
 function isInScope(global: GlobalState, scope: MessageFetchScope, message: ApiMessage, source: MessageSource) {
   if (source === 'api') {
+    return true;
+  }
+
+  // In regular chats, the main thread should cover the whole conversation,
+  // including reply chains that may be represented with per-message thread ids.
+  if (scope.threadId === MAIN_THREAD_ID) {
     return true;
   }
 
@@ -285,8 +261,19 @@ function matchesPerson(global: GlobalState, message: ApiMessage, person: PersonR
     return false;
   }
 
-  return normalizeString(getPeerTitle(getTranslationFn(), sender))
-    === normalizeString(person.title);
+  const normalizedSenderTitle = normalizeString(getPeerTitle(getTranslationFn(), sender));
+  const normalizedPersonTitle = normalizeString(person.title);
+  const normalizedPersonPeerId = normalizeString(person.peerId);
+
+  if (normalizedSenderTitle && normalizedPersonTitle && normalizedSenderTitle.includes(normalizedPersonTitle)) {
+    return true;
+  }
+
+  return Boolean(
+    normalizedSenderTitle
+    && normalizedPersonPeerId
+    && normalizedSenderTitle.includes(normalizedPersonPeerId),
+  );
 }
 
 function matchesTimeRange(message: ApiMessage, timeRange: NormalizedTimeRange | undefined) {
@@ -295,18 +282,6 @@ function matchesTimeRange(message: ApiMessage, timeRange: NormalizedTimeRange | 
   }
 
   return message.date >= timeRange.startSec && message.date < timeRange.endSec;
-}
-
-function isPageEntirelyBeforeTimeRange(
-  messages: ApiMessage[],
-  timeRange: NormalizedTimeRange | undefined,
-) {
-  if (!timeRange || !messages.length) {
-    return false;
-  }
-
-  const newestMessageDate = Math.max(...messages.map((message) => message.date));
-  return newestMessageDate < timeRange.startSec;
 }
 
 function hasPersistedRangeCoverage(
@@ -336,39 +311,6 @@ function matchesKeyword(global: GlobalState, message: ApiMessage, keyword: strin
   return Boolean(haystack?.includes(normalizeString(normalizedKeyword) || ''));
 }
 
-function mergeFetchedPeers(baseGlobal: GlobalState, fetched: {
-  users?: Array<{ id: string }>;
-  chats?: Array<{ id: string }>;
-}) {
-  if (!fetched.users?.length && !fetched.chats?.length) {
-    return baseGlobal;
-  }
-
-  return {
-    ...baseGlobal,
-    users: {
-      ...baseGlobal.users,
-      byId: {
-        ...baseGlobal.users.byId,
-        ...(fetched.users || []).reduce<Record<string, any>>((acc, user) => {
-          acc[user.id] = user;
-          return acc;
-        }, {}),
-      },
-    },
-    chats: {
-      ...baseGlobal.chats,
-      byId: {
-        ...baseGlobal.chats.byId,
-        ...(fetched.chats || []).reduce<Record<string, any>>((acc, chat) => {
-          acc[chat.id] = chat;
-          return acc;
-        }, {}),
-      },
-    },
-  } as GlobalState;
-}
-
 function buildMessageRecord(scope: MessageFetchScope, global: GlobalState, message: ApiMessage) {
   const lang = getTranslationFn();
   const summaryText = getMessageSummaryText(lang, message, undefined, true, 500);
@@ -390,10 +332,6 @@ function toCandidate(message: ApiMessage, state: GlobalState, source: MessageSou
   };
 }
 
-function sortCandidateMessagesDesc(candidates: CandidateMessage[]) {
-  return candidates.sort((left, right) => compareMessagesDesc(left.message, right.message));
-}
-
 function sortCandidateMessagesAsc(candidates: CandidateMessage[]) {
   return candidates.sort((left, right) => compareMessagesAsc(left.message, right.message));
 }
@@ -402,8 +340,6 @@ function buildSummary(
   query: MessageFetchQuery,
   count: number,
   truncated: boolean,
-  hasRemoteHistory: boolean,
-  remoteOnly: boolean,
 ) {
   const modeLabel = query.mode === 'person'
     ? '按人'
@@ -413,98 +349,7 @@ function buildSummary(
         ? '按时间'
         : '最近 N';
 
-  const remoteFallbackLabel = remoteOnly
-    ? '（Telegram 未连接，远端历史不可用）'
-    : '（Telegram 未连接，仅返回本地消息）';
-
-  return `${modeLabel}获取到 ${count} 条消息${truncated ? '（已截断）' : ''}${hasRemoteHistory ? '' : remoteFallbackLabel}`;
-}
-
-function isTelegramConnectionError(error: unknown) {
-  const message = error instanceof Error
-    ? error.message
-    : (error && typeof error === 'object' && 'message' in error
-      ? String((error as { message?: unknown }).message)
-      : String(error));
-  return message.includes('Not connected')
-    || message.includes('Cannot send requests while disconnected');
-}
-
-function getTelegramFloodWaitMs(error: unknown) {
-  const secondsFromField = error
-    && typeof error === 'object'
-    && 'seconds' in error
-    && typeof (error as { seconds?: unknown }).seconds === 'number'
-    ? (error as { seconds?: number }).seconds
-    : undefined;
-
-  if (secondsFromField && secondsFromField > 0) {
-    return secondsFromField * 1000;
-  }
-
-  const errorMessage = error
-    && typeof error === 'object'
-    && 'errorMessage' in error
-    ? String((error as { errorMessage?: unknown }).errorMessage)
-    : '';
-
-  const message = error instanceof Error
-    ? error.message
-    : (error && typeof error === 'object' && 'message' in error
-      ? String((error as { message?: unknown }).message)
-      : String(error));
-
-  const floodMatch = errorMessage.match(/FLOOD_WAIT_(\d+)/i)
-    || message.match(/FLOOD_WAIT_(\d+)/i)
-    || message.match(/A wait of (\d+) seconds is required/i);
-
-  const seconds = floodMatch ? Number(floodMatch[1]) : undefined;
-  return seconds && seconds > 0 ? seconds * 1000 : undefined;
-}
-
-async function fetchPageWithRetry<T>(
-  fetchPage: () => Promise<T | undefined>,
-  options?: {
-    onFloodWait?: (seconds: number) => void | Promise<void>;
-  },
-): Promise<{ page: T | undefined; connectionError?: boolean }> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < TELEGRAM_REMOTE_FETCH_RETRY_ROUNDS; attempt += 1) {
-    try {
-      return {
-        page: await fetchPage(),
-      };
-    } catch (error) {
-      lastError = error;
-
-      const floodWaitMs = getTelegramFloodWaitMs(error);
-      if (floodWaitMs) {
-        await options?.onFloodWait?.(Math.ceil(floodWaitMs / 1000));
-        await pause(floodWaitMs);
-        continue;
-      }
-
-      if (!isTelegramConnectionError(error)) {
-        throw error;
-      }
-
-      if (attempt < TELEGRAM_REMOTE_FETCH_RETRY_ROUNDS - 1) {
-        await pause(TELEGRAM_REMOTE_FETCH_RETRY_MS);
-        continue;
-      }
-
-      return {
-        page: undefined,
-        connectionError: true,
-      };
-    }
-  }
-
-  return {
-    page: undefined,
-    connectionError: isTelegramConnectionError(lastError),
-  };
+  return `${modeLabel}获取到 ${count} 条消息${truncated ? '（已截断）' : ''}（仅本地已同步消息）`;
 }
 
 export function describeMessageFetchQuery(query: MessageFetchQuery) {
@@ -535,56 +380,10 @@ export function describeMessageFetchQuery(query: MessageFetchQuery) {
   return `读取最近 ${query.limit} 条消息`;
 }
 
-async function searchKeywordMessages(
-  baseGlobal: GlobalState,
-  scope: MessageFetchScope,
-  keyword: string,
-  cursorId: number | undefined,
-) {
-  const chat = selectChat(baseGlobal, scope.apiChatId);
-  if (!chat) {
-    return undefined;
-  }
-
-  return callApi('searchMessagesInChat', {
-    peer: chat,
-    isSavedDialog: scope.isSavedDialog,
-    query: keyword,
-    threadId: scope.threadId,
-    ...(cursorId ? {
-      offsetId: cursorId,
-      addOffset: 0,
-    } : undefined),
-    limit: MESSAGE_FETCH_BATCH_SIZE,
-  });
-}
-
-async function fetchOlderMessages(
-  baseGlobal: GlobalState,
-  scope: MessageFetchScope,
-  cursorId: number | undefined,
-) {
-  const chat = selectChat(baseGlobal, scope.apiChatId);
-  if (!chat) {
-    return undefined;
-  }
-
-  return callApi('fetchMessages', {
-    chat,
-    threadId: scope.threadId,
-    ...(cursorId ? {
-      offsetId: cursorId,
-      addOffset: 0,
-    } : undefined),
-    limit: MESSAGE_FETCH_BATCH_SIZE,
-    isSavedDialog: scope.isSavedDialog,
-  });
-}
-
 export async function runMessageFetch(
   global: GlobalState,
   query: MessageFetchQuery,
-  ...[tabId = getCurrentTabId(), progressOptions]: [number?, MessageFetchProgressOptions?]
+  ...[tabId = getCurrentTabId(), _progressOptions]: [number?, unknown?]
 ): Promise<MessageFetchResult> {
   const resolvedTabId = tabId || getCurrentTabId();
   const scope = resolveScope(global, resolvedTabId);
@@ -592,12 +391,9 @@ export async function runMessageFetch(
     return emptyResult();
   }
 
-  const cachedGlobal = await loadCachedGlobal();
   const timeRange = normalizeTimeRange('timeRange' in query ? query.timeRange : undefined);
   const queryPerson = 'person' in query ? query.person : undefined;
   const queryKeyword = 'keyword' in query ? normalizeKeyword(query.keyword) : undefined;
-  const queryBeforeMessageId = 'beforeMessageId' in query ? query.beforeMessageId : undefined;
-  const remoteOnly = 'remoteOnly' in query ? Boolean(query.remoteOnly) : false;
   const requestedLimit = getRequestedLimit(global, query, resolvedTabId);
   const limit = query.mode === 'range'
     ? Number.MAX_SAFE_INTEGER
@@ -611,13 +407,50 @@ export async function runMessageFetch(
   const seenMessageIds = new Set<number>();
   const matchedCandidates: CandidateMessage[] = [];
   let scannedCount = 0;
-  let pagesFetched = 0;
   let truncated = false;
-  let shouldAttemptRemote = remoteOnly || global.connectionState === 'connectionStateReady';
-  let hasRemoteHistory = shouldAttemptRemote;
-  let remoteFetchInterrupted = false;
-  const onRemotePageFetched = progressOptions?.onRemotePageFetched;
-  const onRemoteFloodWait = progressOptions?.onRemoteFloodWait;
+
+  const readPersistedCandidates = async () => {
+    if (queryKeyword) {
+      const matchedIds = await searchMessageIdsByKeywordFts({
+        chatId: scope.chatId,
+        keyword: queryKeyword,
+        threadId: scope.threadId,
+        senderId: queryPerson?.peerId,
+        startSec: timeRange?.startSec,
+        endSec: timeRange?.endSec,
+        beforeMessageId: query.beforeMessageId,
+        limit: fetchBudget.maxScannedMessages,
+      });
+
+      if (matchedIds?.length) {
+        const records = await getSyncedMessagesByIds(scope.chatId, matchedIds);
+        return records
+          .map(({ message }) => toCandidate(message, global, 'store'))
+          .sort((left, right) => compareMessagesDesc(left.message, right.message));
+      }
+    }
+
+    const maxCount = query.mode === 'range'
+      ? Number.MAX_SAFE_INTEGER
+      : fetchBudget.maxScannedMessages;
+    const buildArgs = (senderId?: string) => ({
+      chatId: scope.chatId,
+      threadId: scope.threadId,
+      timeRange,
+      beforeMessageId: query.beforeMessageId,
+      senderId,
+      maxCount,
+    });
+
+    let records = await querySyncedMessages(buildArgs(queryPerson?.peerId));
+    if (!records.length && queryPerson?.peerId) {
+      records = await querySyncedMessages(buildArgs(undefined));
+    }
+
+    return records
+      .map(({ message }) => toCandidate(message, global, 'store'))
+      .sort((left, right) => compareMessagesDesc(left.message, right.message));
+  };
 
   const pushCandidate = (candidate: CandidateMessage) => {
     if (seenMessageIds.has(candidate.message.id)) {
@@ -655,65 +488,30 @@ export async function runMessageFetch(
     }
   };
 
-  const liveIds = getCandidateIds(global, scope, resolvedTabId);
-  const liveMessagesById = selectChatMessages(global, scope.chatId) || {};
-  const liveCandidates = liveIds
-    .map((messageId) => liveMessagesById[messageId])
-    .filter((message): message is ApiMessage => Boolean(message))
-    .map((message) => toCandidate(message, global, 'live'));
-  sortCandidateMessagesDesc(liveCandidates);
-
-  const cachedMessagesById = cachedGlobal ? selectChatMessages(cachedGlobal, scope.chatId) || {} : {};
-  const cachedThreadState = cachedGlobal
-    ? selectThreadLocalState(cachedGlobal, scope.chatId, scope.threadId)
-    : undefined;
   const liveThreadState = selectThreadLocalState(global, scope.chatId, scope.threadId);
-  const cachedIds = cachedThreadState?.listedIds?.length
-    ? cachedThreadState.listedIds
-    : cachedThreadState?.lastViewportIds?.length
-      ? cachedThreadState.lastViewportIds
-      : Object.keys(cachedMessagesById).map(Number);
-
-  const cachedCandidates = cachedIds
-    .map((messageId) => cachedMessagesById[messageId])
-    .filter((message): message is ApiMessage => Boolean(message))
-    .map((message) => toCandidate(message, cachedGlobal as GlobalState, 'cache'));
-  sortCandidateMessagesDesc(cachedCandidates);
-
-  const localSeedCandidates = [...liveCandidates, ...cachedCandidates];
-  if (!remoteOnly) {
-    localSeedCandidates.forEach((candidate) => {
-      if (!truncated) {
-        pushCandidate(candidate);
-      }
-    });
-  }
-
-  const hasCompleteLocalRangeCoverage = !remoteOnly
-    && query.mode === 'range'
-    && hasPersistedRangeCoverage(
-      [
-        ...(liveThreadState?.fetchedMessageRangeCoverages || []),
-        ...(cachedThreadState?.fetchedMessageRangeCoverages || []),
-      ],
-      timeRange,
-    );
-
-  if (hasCompleteLocalRangeCoverage) {
-    shouldAttemptRemote = false;
-    hasRemoteHistory = false;
-  }
+  const localSeedCandidates = await readPersistedCandidates();
+  localSeedCandidates.forEach((candidate) => {
+    if (!truncated) {
+      pushCandidate(candidate);
+    }
+  });
 
   const buildResult = (): MessageFetchResult => {
+    const hasCompleteLocalRangeCoverage = query.mode === 'range'
+      && hasPersistedRangeCoverage(
+        [
+          ...(liveThreadState?.fetchedMessageRangeCoverages || []),
+        ],
+        timeRange,
+      );
     const finalSourceCandidates = matchedCandidates.length
       ? matchedCandidates
-      : remoteOnly
-        ? []
-        : localSeedCandidates;
+      : localSeedCandidates;
     const finalCandidates = sortCandidateMessagesAsc(finalSourceCandidates.slice(0, limit));
     const messages = finalCandidates.map(({ message, state }) => buildMessageRecord(scope, state, message));
     const evidenceIds = messages.map(({ messageId }) => messageId);
-    const nextBeforeMessageId = remoteFetchInterrupted ? undefined : finalCandidates[0]?.message.id;
+    const shouldContinue = truncated && !hasCompleteLocalRangeCoverage;
+    const nextBeforeMessageId = shouldContinue ? finalCandidates[0]?.message.id : undefined;
 
     return {
       messages,
@@ -722,205 +520,9 @@ export async function runMessageFetch(
       evidenceIds,
       sourceMessages: finalCandidates.map(({ message }) => message),
       nextBeforeMessageId,
-      summary: buildSummary(query, messages.length, truncated, hasRemoteHistory, remoteOnly),
+      summary: buildSummary(query, messages.length, truncated),
     };
   };
-
-  const buildPageResult = (
-    pageCandidates: CandidateMessage[],
-    nextBeforeMessageId?: number,
-  ): MessageFetchResult => {
-    const finalCandidates = sortCandidateMessagesAsc(pageCandidates.slice());
-    const messages = finalCandidates.map(({ message, state }) => buildMessageRecord(scope, state, message));
-    return {
-      messages,
-      total: messages.length,
-      truncated: false,
-      evidenceIds: messages.map(({ messageId }) => messageId),
-      sourceMessages: finalCandidates.map(({ message }) => message),
-      nextBeforeMessageId,
-      summary: buildSummary(query, messages.length, false, hasRemoteHistory, remoteOnly),
-    };
-  };
-
-  if (!shouldAttemptRemote) {
-    return buildResult();
-  }
-
-  if (queryKeyword) {
-    const initialCursorId = queryBeforeMessageId
-      || (matchedCandidates.length
-        ? Math.min(...matchedCandidates.map(({ message }) => message.id))
-        : Math.min(
-          ...[
-            ...liveCandidates.map(({ message }) => message.id),
-            ...cachedCandidates.map(({ message }) => message.id),
-          ].filter((id) => Number.isFinite(id)),
-        ));
-    let keywordCursorId: number | undefined = Number.isFinite(initialCursorId)
-      ? initialCursorId
-      : undefined;
-    let previousKeywordCursorId: number | undefined;
-
-    while (
-      !truncated
-      && pagesFetched < fetchBudget.maxPages
-      && scannedCount < fetchBudget.maxScannedMessages
-    ) {
-      const { page, connectionError } = await fetchPageWithRetry(() => searchKeywordMessages(
-        global,
-        scope,
-        queryKeyword,
-        Number.isFinite(keywordCursorId) ? keywordCursorId : undefined,
-      ), {
-        onFloodWait: onRemoteFloodWait,
-      });
-      if (connectionError) {
-        remoteFetchInterrupted = true;
-        if (pagesFetched === 0) {
-          hasRemoteHistory = false;
-        }
-        break;
-      }
-      pagesFetched += 1;
-
-      if (!page?.messages?.length) {
-        break;
-      }
-
-      const pageCandidates = page.messages
-        .map((message) => toCandidate(message, global, 'api'))
-        .sort((left, right) => compareMessagesDesc(left.message, right.message));
-      const matchedPageCandidates: CandidateMessage[] = [];
-
-      for (const candidate of pageCandidates) {
-        if (truncated) {
-          break;
-        }
-
-        const matchedBefore = matchedCandidates.length;
-        pushCandidate(candidate);
-        if (matchedCandidates.length > matchedBefore) {
-          matchedPageCandidates.push(candidate);
-        }
-      }
-
-      const pageIds = page.messages.map(({ id }) => id).filter((id) => Number.isFinite(id));
-      if (!pageIds.length) {
-        break;
-      }
-
-      const nextKeywordCursorId = page.nextOffsetId && Number.isFinite(page.nextOffsetId)
-        ? page.nextOffsetId
-        : Math.min(...pageIds);
-
-      await onRemotePageFetched?.(buildPageResult(
-        matchedPageCandidates,
-        Number.isFinite(nextKeywordCursorId) ? nextKeywordCursorId : undefined,
-      ));
-
-      if (
-        previousKeywordCursorId !== undefined
-        && nextKeywordCursorId >= previousKeywordCursorId
-      ) {
-        break;
-      }
-
-      previousKeywordCursorId = nextKeywordCursorId;
-      keywordCursorId = nextKeywordCursorId;
-      await pause(TELEGRAM_REMOTE_FETCH_PAGE_THROTTLE_MS);
-    }
-  } else {
-    const shouldStartFromLatest = query.mode === 'range' && !Number.isFinite(queryBeforeMessageId);
-    const initialCursorId = shouldStartFromLatest
-      ? undefined
-      : (queryBeforeMessageId
-        || (
-          matchedCandidates.length
-            ? Math.min(...matchedCandidates.map(({ message }) => message.id))
-            : Math.min(
-              ...[
-                ...liveCandidates.map(({ message }) => message.id),
-                ...cachedCandidates.map(({ message }) => message.id),
-              ].filter((id) => Number.isFinite(id)),
-            )
-        ));
-
-    let cursorId: number | undefined = Number.isFinite(initialCursorId) ? initialCursorId : undefined;
-    let previousCursorId: number | undefined;
-
-    while (
-      !truncated
-      && pagesFetched < fetchBudget.maxPages
-      && scannedCount < fetchBudget.maxScannedMessages
-    ) {
-      const { page, connectionError } = await fetchPageWithRetry(() => fetchOlderMessages(
-        global,
-        scope,
-        cursorId,
-      ), {
-        onFloodWait: onRemoteFloodWait,
-      });
-      if (connectionError) {
-        remoteFetchInterrupted = true;
-        if (pagesFetched === 0) {
-          hasRemoteHistory = false;
-        }
-        break;
-      }
-      pagesFetched += 1;
-
-      if (!page?.messages?.length) {
-        break;
-      }
-
-      const apiState = mergeFetchedPeers(global, page);
-      const pageCandidates = page.messages
-        .map((message: ApiMessage) => toCandidate(message, apiState, 'api'))
-        .sort((left: CandidateMessage, right: CandidateMessage) => compareMessagesDesc(left.message, right.message));
-      const matchedPageCandidates: CandidateMessage[] = [];
-
-      for (const candidate of pageCandidates) {
-        if (truncated) {
-          break;
-        }
-
-        const matchedBefore = matchedCandidates.length;
-        pushCandidate(candidate);
-        if (matchedCandidates.length > matchedBefore) {
-          matchedPageCandidates.push(candidate);
-        }
-      }
-
-      const pageIds = page.messages
-        .map(({ id }: ApiMessage) => id)
-        .filter((id: number) => Number.isFinite(id));
-      if (!pageIds.length) {
-        break;
-      }
-
-      const nextCursorId = Math.min(...pageIds);
-      await onRemotePageFetched?.(buildPageResult(
-        matchedPageCandidates,
-        Number.isFinite(nextCursorId) ? nextCursorId : undefined,
-      ));
-
-      if (isPageEntirelyBeforeTimeRange(page.messages, timeRange)) {
-        break;
-      }
-
-      if (
-        previousCursorId !== undefined
-        && nextCursorId >= previousCursorId
-      ) {
-        break;
-      }
-
-      previousCursorId = nextCursorId;
-      cursorId = nextCursorId;
-      await pause(TELEGRAM_REMOTE_FETCH_PAGE_THROTTLE_MS);
-    }
-  }
 
   return buildResult();
 }

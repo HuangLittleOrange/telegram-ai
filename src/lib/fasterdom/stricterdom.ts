@@ -171,7 +171,7 @@ function setupMutationObserver() {
           return;
         }
 
-        if (attributeName?.startsWith('data-')) {
+        if (attributeName === 'style' || attributeName?.startsWith('data-')) {
           return;
         }
 

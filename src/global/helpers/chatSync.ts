@@ -1,9 +1,30 @@
-import type { ApiMessage } from '../../api/types';
 import type { TimeRange } from '../types/tabState';
 
 export type TimeRangeBoundsSec = {
   startSec: number;
   endSec: number;
+};
+
+type PersistedSyncSnapshotArgs = {
+  persistedCount: number;
+  oldestDateSec?: number;
+  newestDateSec?: number;
+  baselineTotalMessages?: number;
+  isTotalKnown?: boolean;
+};
+
+type PersistedSyncSnapshot = {
+  syncedMessages: number;
+  totalMessages?: number;
+  unsyncedMessages: number;
+  oldestSyncedDate?: number;
+  newestSyncedDate?: number;
+};
+
+type ResolveFinalSyncStatusArgs = {
+  currentStatus: 'idle' | 'syncing' | 'paused' | 'completed' | 'error';
+  takeoutSuccess: boolean;
+  hadRuntimeError?: boolean;
 };
 
 export function resolveTimeRangeBoundsSec(timeRange?: TimeRange): TimeRangeBoundsSec | undefined {
@@ -81,57 +102,55 @@ export function resolveTimeRangeBoundsSec(timeRange?: TimeRange): TimeRangeBound
   };
 }
 
-export function isMessageInRange(
-  messageDateSec: number,
-  bounds?: TimeRangeBoundsSec,
-): boolean {
-  if (!bounds) {
-    return true;
-  }
-
-  return messageDateSec >= bounds.startSec && messageDateSec < bounds.endSec;
-}
-
-export function countMessagesInRange(
-  messagesById?: Record<number, ApiMessage>,
-  bounds?: TimeRangeBoundsSec,
-): number {
-  if (!messagesById) {
-    return 0;
-  }
-
-  const messages = Object.values(messagesById);
-  if (!messages.length) {
-    return 0;
-  }
-
-  return messages.reduce((count, message) => (
-    isMessageInRange(message.date, bounds) ? count + 1 : count
-  ), 0);
-}
-
-export function getOldestMessageDateInRange(
-  messagesById?: Record<number, ApiMessage>,
-  bounds?: TimeRangeBoundsSec,
-): number | undefined {
-  if (!messagesById) {
-    return undefined;
-  }
-
-  let oldestDateSec: number | undefined;
-  Object.values(messagesById).forEach((message) => {
-    if (!isMessageInRange(message.date, bounds)) {
-      return;
-    }
-
-    if (oldestDateSec === undefined || message.date < oldestDateSec) {
-      oldestDateSec = message.date;
-    }
-  });
-
-  return oldestDateSec;
-}
-
 export function calculateUnsyncedMessages(totalMessages: number, syncedMessages: number): number {
   return Math.max(0, totalMessages - syncedMessages);
+}
+
+export function resolveFinalChatSyncStatus({
+  currentStatus,
+  takeoutSuccess,
+  hadRuntimeError,
+}: ResolveFinalSyncStatusArgs): ResolveFinalSyncStatusArgs['currentStatus'] {
+  if (currentStatus === 'paused' || currentStatus === 'error') {
+    return currentStatus;
+  }
+
+  if (takeoutSuccess) {
+    return 'completed';
+  }
+
+  if (hadRuntimeError) {
+    return 'error';
+  }
+
+  return currentStatus === 'syncing' ? 'paused' : currentStatus;
+}
+
+export function buildPersistedSyncSnapshot({
+  persistedCount,
+  oldestDateSec,
+  newestDateSec,
+  baselineTotalMessages,
+  isTotalKnown = true,
+}: PersistedSyncSnapshotArgs): PersistedSyncSnapshot {
+  const syncedMessages = Math.max(0, persistedCount || 0);
+  const totalMessages = isTotalKnown
+    ? Math.max(baselineTotalMessages || 0, syncedMessages)
+    : undefined;
+
+  if (!syncedMessages) {
+    return {
+      syncedMessages: 0,
+      totalMessages,
+      unsyncedMessages: totalMessages === undefined ? 0 : calculateUnsyncedMessages(totalMessages, 0),
+    };
+  }
+
+  return {
+    syncedMessages,
+    totalMessages,
+    unsyncedMessages: totalMessages === undefined ? 0 : calculateUnsyncedMessages(totalMessages, syncedMessages),
+    oldestSyncedDate: oldestDateSec ? oldestDateSec * 1000 : undefined,
+    newestSyncedDate: newestDateSec ? newestDateSec * 1000 : undefined,
+  };
 }

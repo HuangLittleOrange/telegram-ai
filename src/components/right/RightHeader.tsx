@@ -55,6 +55,7 @@ type OwnProps = {
   threadId?: ThreadId;
   isColumnOpen?: boolean;
   isProfile?: boolean;
+  isAiAssistant?: boolean;
   isManagement?: boolean;
   isStatistics?: boolean;
   isBoostStatistics?: boolean;
@@ -100,6 +101,7 @@ const COLUMN_ANIMATION_DURATION = 450 + ANIMATION_END_DELAY;
 
 enum HeaderContent {
   Profile,
+  AiAssistant,
   MemberList,
   GiftList,
   SharedMedia,
@@ -146,6 +148,7 @@ const RightHeader: FC<OwnProps & StateProps> = ({
   threadId,
   isColumnOpen,
   isProfile,
+  isAiAssistant,
   isManagement,
   isStatistics,
   isMessageStatistics,
@@ -252,6 +255,10 @@ const RightHeader: FC<OwnProps & StateProps> = ({
     openSettingsScreen({ screen: SettingsScreens.EditProfile });
   });
 
+  const handleOpenAiSettings = useLastCallback(() => {
+    openSettingsScreen({ screen: SettingsScreens.Ai });
+  });
+
   const handleClose = useLastCallback(() => {
     onClose(!isSavedMessages);
   });
@@ -282,6 +289,8 @@ const RightHeader: FC<OwnProps & StateProps> = ({
     ) : -1 // Never reached
   ) : isPollResults ? (
     HeaderContent.PollResults
+  ) : isAiAssistant ? (
+    HeaderContent.AiAssistant
   ) : isStickerSearch ? (
     HeaderContent.StickerSearch
   ) : isGifSearch ? (
@@ -397,6 +406,22 @@ const RightHeader: FC<OwnProps & StateProps> = ({
     switch (renderingContentKey) {
       case HeaderContent.PollResults:
         return <h3 className="title">{oldLang('PollResults')}</h3>;
+      case HeaderContent.AiAssistant:
+        return (
+          <>
+            <h3 className="title">AI Assistant</h3>
+            <section className="tools">
+              <Button
+                round
+                color="translucent"
+                size="smaller"
+                ariaLabel="AI 设置"
+                onClick={handleOpenAiSettings}
+                iconName="settings"
+              />
+            </section>
+          </>
+        );
       case HeaderContent.AddingMembers:
         return <h3 className="title">{oldLang(isChannel ? 'ChannelAddSubscribers' : 'GroupAddMembers')}</h3>;
       case HeaderContent.ManageInitial:

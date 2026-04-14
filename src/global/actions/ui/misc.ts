@@ -84,6 +84,22 @@ addActionHandler('resetLeftColumnWidth', (global): ActionReturnType => {
   };
 });
 
+addActionHandler('setRightColumnWidth', (global, actions, payload): ActionReturnType => {
+  const { rightColumnWidth } = payload;
+
+  return {
+    ...global,
+    rightColumnWidth,
+  };
+});
+
+addActionHandler('resetRightColumnWidth', (global): ActionReturnType => {
+  return {
+    ...global,
+    rightColumnWidth: undefined,
+  };
+});
+
 addActionHandler('toggleManagement', (global, actions, payload): ActionReturnType => {
   const { force, tabId = getCurrentTabId() } = payload || {};
   const { chatId } = selectCurrentMessageList(global, tabId) || {};

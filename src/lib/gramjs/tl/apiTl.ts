@@ -1548,6 +1548,7 @@ keyboardButtonStyle#4fdd3430 flags:# bg_primary:flags.0?true bg_danger:flags.1?t
 invokeAfterMsg#cb9f372d {X:Type} msg_id:long query:!X = X;
 initConnection#c1cd5ea9 {X:Type} flags:# api_id:int device_model:string system_version:string app_version:string system_lang_code:string lang_pack:string lang_code:string proxy:flags.0?InputClientProxy params:flags.1?JSONValue query:!X = X;
 invokeWithLayer#da9b0d0d {X:Type} layer:int query:!X = X;
+invokeWithTakeout#aca9fd2e {X:Type} takeout_id:long query:!X = X;
 auth.sendCode#a677244f phone_number:string api_id:int api_hash:string settings:CodeSettings = auth.SentCode;
 auth.signUp#aac7b717 flags:# no_joined_notifications:flags.0?true phone_number:string phone_code_hash:string first_name:string last_name:string = auth.Authorization;
 auth.signIn#8d52a951 flags:# phone_number:string phone_code_hash:string phone_code:flags.0?string email_verification:flags.1?EmailVerification = auth.Authorization;
@@ -1587,6 +1588,8 @@ account.getPasswordSettings#9cd4eaf9 password:InputCheckPasswordSRP = account.Pa
 account.updatePasswordSettings#a59b102f password:InputCheckPasswordSRP new_settings:account.PasswordInputSettings = Bool;
 account.sendConfirmPhoneCode#1b3faa88 hash:string settings:CodeSettings = auth.SentCode;
 account.confirmPhone#5f2178c3 phone_code_hash:string phone_code:string = Bool;
+account.initTakeoutSession#8ef3eab0 flags:# contacts:flags.0?true message_users:flags.1?true message_chats:flags.2?true message_megagroups:flags.3?true message_channels:flags.4?true files:flags.5?true file_max_size:flags.5?long = account.Takeout;
+account.finishTakeoutSession#1d2652ee flags:# success:flags.0?true = Bool;
 account.getTmpPassword#449e0b51 password:InputCheckPasswordSRP period:int = account.TmpPassword;
 account.getWebAuthorizations#182e6d6f = account.WebAuthorizations;
 account.resetWebAuthorization#2d01b9ef hash:long = Bool;

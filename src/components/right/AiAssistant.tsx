@@ -2,11 +2,13 @@ import type { FC } from '@teact';
 import {
   memo,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from '@teact';
 import type React from '../../lib/teact/teact';
 import type { TeactNode } from '../../lib/teact/teact';
-import { getActions, withGlobal } from '../../global';
+import { getActions, getGlobal, withGlobal } from '../../global';
 
 import type { ApiChat } from '../../api/types';
 import type { ChatSyncState } from '../../global/types';
@@ -14,7 +16,6 @@ import type {
   AiAssistantStreamStatus,
   ToolOutput,
 } from '../../global/types/tabState';
-import type { TimeRange } from '../../global/types/tabState';
 import type { ThreadId } from '../../types';
 import { MAIN_THREAD_ID } from '../../api/types';
 import { SettingsScreens } from '../../types';
@@ -26,25 +27,33 @@ import {
   buildAiThinkingSummary,
   formatAiThinkingDuration,
 } from '../../global/helpers/aiThinking';
+import { resolveTimeRangeBoundsSec } from '../../global/helpers/chatSync';
 import {
   selectChat,
   selectTabState,
 } from '../../global/selectors';
 import buildClassName from '../../util/buildClassName';
-import { copyTextToClipboard } from '../../util/clipboard';
 import { formatAiToolOutputSummary } from './helpers/aiToolOutput';
 import {
   type MarkdownBlock,
   type MarkdownInlineNode,
   parseMarkdownBlocks,
 } from './helpers/markdown';
+import {
+  loadSyncedHistoryDays,
+  loadSyncedHistoryMessages,
+  loadSyncedHistorySearchMessages,
+  type SyncedHistoryDayItem,
+  type SyncedHistoryMessageItem,
+} from './helpers/syncedHistoryBrowser';
 
 import useLastCallback from '../../hooks/useLastCallback';
 
 import Icon from '../common/icons/Icon';
 import SafeLink from '../common/SafeLink';
 import Button from '../ui/Button';
-import InputText from '../ui/InputText';
+import Modal from '../ui/Modal';
+import TextArea from '../ui/TextArea';
 
 import './AiAssistant.scss';
 
@@ -86,15 +95,8 @@ type StateProps = {
   hasApiKey: boolean;
 };
 
-type RangeOption = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'custom';
-
-const PRESET_LABELS: Record<Exclude<RangeOption, 'all' | 'custom'>, string> = {
-  today: '今天',
-  yesterday: '昨天',
-  thisWeek: '本周',
-  lastWeek: '上周',
-  thisMonth: '本月',
-};
+const DEFAULT_SYNC_RANGE_DAYS = 30;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_SYNC_STATE: ChatSyncState = {
   selectedMethod: 'dataExport',
@@ -114,22 +116,68 @@ function toDateTimeLocalValue(timestamp: number) {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
-function getRangeOption(range?: TimeRange): RangeOption {
-  if (!range) {
-    return 'all';
+function formatDateOnly(timestamp?: number) {
+  if (!timestamp) {
+    return '暂无';
   }
 
-  if (range.mode === 'custom') {
-    return 'custom';
-  }
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
 
-  return range.value;
+  return `${year}-${month}-${day}`;
 }
 
 function getDefaultCustomRange() {
   const endAt = Date.now();
-  const startAt = endAt - 7 * 24 * 60 * 60 * 1000;
+  const startAt = endAt - DEFAULT_SYNC_RANGE_DAYS * DAY_IN_MS;
   return { startAt, endAt };
+}
+
+function formatTakeoutDelay(seconds: number) {
+  if (seconds < 60) {
+    return `${seconds} 秒`;
+  }
+
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} 分钟`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (!remainingMinutes) {
+    return `${hours} 小时`;
+  }
+
+  return `${hours} 小时 ${remainingMinutes} 分钟`;
+}
+
+function summarizeSyncErrorDetail(detail?: string, maxLength = 180) {
+  if (!detail) {
+    return undefined;
+  }
+
+  const compact = detail.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return undefined;
+  }
+
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+
+  return `${compact.slice(0, maxLength)}...`;
+}
+
+function resolveDisplayedSyncErrorCode(errorCode?: string, detail?: string) {
+  const text = `${errorCode || ''} ${detail || ''}`;
+  if (/TeactN\.setGlobal|Attempt to set an outdated global|outdated global/i.test(text)) {
+    return 'SYNC_STATE_OUTDATED';
+  }
+
+  return errorCode;
 }
 
 function renderAssistantContent(text: string) {
@@ -320,46 +368,59 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   isActive,
 }) => {
   const {
-    openChatWithDraft,
     openSettingsScreen,
-    clearAiTurns,
     requestAiExtractTodos,
     cancelAiPrompt,
     requestAiPrompt,
     requestAiReplySuggestions,
     requestAiSummaryToday,
+    hydrateAiAssistantSession,
     loadChatSyncStats,
     pauseChatSync,
     resetChatSync,
     setChatSyncMethod,
     setChatSyncTimeRange,
     startChatSync,
-    showNotification,
+    focusMessage,
   } = getActions();
 
   const [prompt, setPrompt] = useState('');
   const [isSyncSettingsOpen, setIsSyncSettingsOpen] = useState(false);
+  const [isTakeoutHelpOpen, setIsTakeoutHelpOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [expandedThinkingEntries, setExpandedThinkingEntries] = useState<Record<string, boolean>>({});
+  const takeoutHelpShownAtRef = useRef<number | undefined>(undefined);
   const [customStartAt, setCustomStartAt] = useState(() => (
     syncState.selectedTimeRange?.mode === 'custom'
       ? syncState.selectedTimeRange.startAt
       : getDefaultCustomRange().startAt
   ));
-  const [customEndAt, setCustomEndAt] = useState(() => (
-    syncState.selectedTimeRange?.mode === 'custom'
-      ? syncState.selectedTimeRange.endAt
-      : getDefaultCustomRange().endAt
-  ));
+  const [isHistoryBrowserOpen, setIsHistoryBrowserOpen] = useState(false);
+  const [historyDays, setHistoryDays] = useState<SyncedHistoryDayItem[]>([]);
+  const [isHistoryDaysLoading, setIsHistoryDaysLoading] = useState(false);
+  const [historyMessages, setHistoryMessages] = useState<SyncedHistoryMessageItem[]>([]);
+  const [isHistoryMessagesLoading, setIsHistoryMessagesLoading] = useState(false);
+  const [historySearchMessages, setHistorySearchMessages] = useState<SyncedHistoryMessageItem[]>([]);
+  const [isHistorySearchLoading, setIsHistorySearchLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | undefined>();
+  const [historyDayQuery, setHistoryDayQuery] = useState('');
+  const [historyGlobalQuery, setHistoryGlobalQuery] = useState('');
+  const [selectedHistoryDayStartSec, setSelectedHistoryDayStartSec] = useState<number | undefined>();
   const isSupportedChat = Boolean(chat && (isChatGroup(chat) || isChatChannel(chat)));
   const resolvedThreadId = threadId || MAIN_THREAD_ID;
-  const selectedRangeOption = getRangeOption(syncState.selectedTimeRange);
   const isStreaming = streamStatus === 'streaming' || streamStatus === 'cancelling';
   const isCancelling = streamStatus === 'cancelling';
   const liveDraftText = streamStatus === 'done'
     ? ''
     : sanitizeAssistantText(finalText || draftText) || finalText || draftText || '';
   const hasLiveDraft = Boolean(liveDraftText.trim());
+
+  useEffect(() => {
+    hydrateAiAssistantSession({
+      chatId,
+      threadId: resolvedThreadId,
+    });
+  }, [chatId, hydrateAiAssistantSession, resolvedThreadId]);
 
   useEffect(() => {
     if (!isSupportedChat) {
@@ -375,11 +436,10 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     }
 
     setCustomStartAt(syncState.selectedTimeRange.startAt);
-    setCustomEndAt(syncState.selectedTimeRange.endAt);
   }, [syncState.selectedTimeRange]);
 
   useEffect(() => {
-    if (!isLoading && !isStreaming) {
+    if (!isLoading && !isStreaming && syncState.status !== 'syncing') {
       return undefined;
     }
 
@@ -388,11 +448,8 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [isLoading, isStreaming]);
+  }, [isLoading, isStreaming, syncState.status]);
 
-  const syncProgress = !syncState.totalMessages
-    ? 0
-    : Math.max(0, Math.min(100, Math.round((syncState.syncedMessages / syncState.totalMessages) * 100)));
   const syncStatusText = syncState.status === 'syncing'
     ? '同步中'
     : syncState.status === 'paused'
@@ -402,40 +459,275 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         : syncState.status === 'error'
           ? '同步失败'
           : '待同步';
-  const oldestSyncedDateText = syncState.oldestSyncedDate
-    ? new Date(syncState.oldestSyncedDate).toLocaleString()
-    : '暂无';
-
-  const handleRangeSelect = (option: RangeOption) => {
-    if (option === 'all') {
-      setChatSyncTimeRange({ chatId, timeRange: undefined });
-      return;
+  const syncedRangeStartTimestamp = syncState.oldestSyncedDate;
+  const syncedRangeStartText = formatDateOnly(syncedRangeStartTimestamp);
+  const syncedRangeEndText = formatDateOnly(syncState.newestSyncedDate);
+  const takeoutDelayText = syncState.takeoutInitDelaySeconds
+    ? formatTakeoutDelay(syncState.takeoutInitDelaySeconds)
+    : undefined;
+  const takeoutRetryAtText = syncState.takeoutInitDelaySeconds
+    ? new Date(Date.now() + syncState.takeoutInitDelaySeconds * 1000).toLocaleString()
+    : undefined;
+  const syncNoProgressSeconds = syncState.status === 'syncing' && syncState.lastProgressAt
+    ? Math.max(0, Math.floor((now - syncState.lastProgressAt) / 1000))
+    : 0;
+  const syncErrorDetail = summarizeSyncErrorDetail(syncState.errorDetail);
+  const syncErrorCode = resolveDisplayedSyncErrorCode(syncState.errorCode, syncState.errorDetail);
+  const historyBounds = resolveTimeRangeBoundsSec(syncState.selectedTimeRange);
+  const historyRangeStartSec = historyBounds?.startSec;
+  const historyRangeEndSec = historyBounds?.endSec;
+  const isRangeScopedSync = syncState.selectedTimeRange?.mode === 'custom';
+  const hasReliableScopedTotal = syncState.scopedTotalMessages !== undefined;
+  const progressBaseTotal = isRangeScopedSync ? syncState.scopedTotalMessages : syncState.totalMessages;
+  const syncProgress = !progressBaseTotal
+    ? 0
+    : Math.max(0, Math.min(100, Math.round((syncState.syncedMessages / progressBaseTotal) * 100)));
+  const normalizedHistoryGlobalQuery = historyGlobalQuery.trim();
+  const isHistoryGlobalSearchActive = Boolean(normalizedHistoryGlobalQuery);
+  const selectedHistoryDay = selectedHistoryDayStartSec === undefined
+    ? undefined
+    : historyDays.find((day) => day.dayStartSec === selectedHistoryDayStartSec);
+  const historySearchDayItems = useMemo(() => {
+    if (!isHistoryGlobalSearchActive) {
+      return [];
     }
 
-    if (option === 'custom') {
-      const customRange = syncState.selectedTimeRange?.mode === 'custom'
-        ? syncState.selectedTimeRange
-        : {
-          mode: 'custom' as const,
-          ...getDefaultCustomRange(),
-        };
-      setCustomStartAt(customRange.startAt);
-      setCustomEndAt(customRange.endAt);
-      setChatSyncTimeRange({ chatId, timeRange: customRange });
-      return;
-    }
+    const byDayKey = new Map<string, SyncedHistoryDayItem>();
+    historySearchMessages.forEach((message) => {
+      const existing = byDayKey.get(message.dayKey);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
 
-    setChatSyncTimeRange({
-      chatId,
-      timeRange: {
-        mode: 'preset',
-        value: option,
-      },
+      byDayKey.set(message.dayKey, {
+        dayKey: message.dayKey,
+        dayStartSec: message.dayStartSec,
+        count: 1,
+        label: message.dayLabel,
+      });
     });
-  };
 
-  const handleApplyCustomRange = useLastCallback(() => {
-    if (!customStartAt || !customEndAt || customStartAt >= customEndAt) {
+    return Array.from(byDayKey.values())
+      .sort((left, right) => right.dayStartSec - left.dayStartSec);
+  }, [historySearchMessages, isHistoryGlobalSearchActive]);
+  const filteredHistoryDays = useMemo(() => {
+    const normalizedQuery = historyDayQuery.trim().toLowerCase();
+    const sourceDays = isHistoryGlobalSearchActive ? historySearchDayItems : historyDays;
+
+    if (!normalizedQuery) {
+      return sourceDays;
+    }
+
+    return sourceDays.filter((day) => (
+      day.dayKey.toLowerCase().includes(normalizedQuery)
+      || day.label.toLowerCase().includes(normalizedQuery)
+    ));
+  }, [historyDayQuery, historyDays, historySearchDayItems, isHistoryGlobalSearchActive]);
+  const visibleHistoryMessages = useMemo(() => {
+    if (isHistoryGlobalSearchActive) {
+      return selectedHistoryDayStartSec === undefined
+        ? historySearchMessages
+        : historySearchMessages.filter((message) => message.dayStartSec === selectedHistoryDayStartSec);
+    }
+
+    return historyMessages;
+  }, [historyMessages, historySearchMessages, isHistoryGlobalSearchActive, selectedHistoryDayStartSec]);
+
+  useEffect(() => {
+    takeoutHelpShownAtRef.current = undefined;
+    setIsTakeoutHelpOpen(false);
+    setIsHistoryBrowserOpen(false);
+    setHistoryDays([]);
+    setHistoryMessages([]);
+    setHistorySearchMessages([]);
+    setHistoryError(undefined);
+    setHistoryDayQuery('');
+    setHistoryGlobalQuery('');
+    setSelectedHistoryDayStartSec(undefined);
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!isHistoryBrowserOpen || !isSupportedChat) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    setIsHistoryDaysLoading(true);
+    setHistoryError(undefined);
+
+    void loadSyncedHistoryDays({
+      chatId,
+      threadId: resolvedThreadId,
+      timeRange: historyRangeStartSec !== undefined && historyRangeEndSec !== undefined
+        ? {
+          startSec: historyRangeStartSec,
+          endSec: historyRangeEndSec,
+        }
+        : undefined,
+    }).then((days) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistoryDays(days);
+      setHistoryDayQuery('');
+      setSelectedHistoryDayStartSec((current) => (
+        current !== undefined && days.some((day) => day.dayStartSec === current)
+          ? current
+          : undefined
+      ));
+      if (!days.length) {
+        setHistoryError('当前时间范围内还没有本地已同步消息');
+      }
+    }).catch(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistoryError('读取按日聊天记录失败');
+      setHistoryDays([]);
+    }).finally(() => {
+      if (!isCancelled) {
+        setIsHistoryDaysLoading(false);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    chatId,
+    historyRangeEndSec,
+    historyRangeStartSec,
+    isHistoryBrowserOpen,
+    isSupportedChat,
+    resolvedThreadId,
+    syncState.syncedMessages,
+  ]);
+
+  useEffect(() => {
+    if (!isHistoryBrowserOpen || isHistoryGlobalSearchActive || selectedHistoryDayStartSec === undefined) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    setIsHistoryMessagesLoading(true);
+    setHistoryError(undefined);
+
+    void loadSyncedHistoryMessages({
+      global: getGlobal(),
+      chatId,
+      threadId: resolvedThreadId,
+      dayStartSec: selectedHistoryDayStartSec,
+    }).then((messages) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistoryMessages(messages);
+      if (!messages.length) {
+        setHistoryError('这一天还没有本地已同步消息');
+      }
+    }).catch(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistoryError('读取当天聊天记录失败');
+      setHistoryMessages([]);
+    }).finally(() => {
+      if (!isCancelled) {
+        setIsHistoryMessagesLoading(false);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [chatId, isHistoryBrowserOpen, isHistoryGlobalSearchActive, resolvedThreadId, selectedHistoryDayStartSec]);
+
+  useEffect(() => {
+    if (!isHistoryBrowserOpen) {
+      return undefined;
+    }
+
+    if (!normalizedHistoryGlobalQuery) {
+      setIsHistorySearchLoading(false);
+      setHistorySearchMessages([]);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    setIsHistorySearchLoading(true);
+    setHistoryError(undefined);
+
+    void loadSyncedHistorySearchMessages({
+      global: getGlobal(),
+      chatId,
+      threadId: resolvedThreadId,
+      keyword: normalizedHistoryGlobalQuery,
+      timeRange: historyRangeStartSec !== undefined && historyRangeEndSec !== undefined
+        ? {
+          startSec: historyRangeStartSec,
+          endSec: historyRangeEndSec,
+        }
+        : undefined,
+    }).then((messages) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistorySearchMessages(messages);
+      setSelectedHistoryDayStartSec((current) => (
+        current !== undefined && messages.some((message) => message.dayStartSec === current)
+          ? current
+          : undefined
+      ));
+      if (!messages.length) {
+        setHistoryError('当前范围内没有匹配这个关键词的本地聊天记录');
+      }
+    }).catch(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setHistoryError('读取全局搜索结果失败');
+      setHistorySearchMessages([]);
+    }).finally(() => {
+      if (!isCancelled) {
+        setIsHistorySearchLoading(false);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    chatId,
+    historyRangeEndSec,
+    historyRangeStartSec,
+    isHistoryBrowserOpen,
+    normalizedHistoryGlobalQuery,
+    resolvedThreadId,
+  ]);
+
+  useEffect(() => {
+    if (!syncState.requiresTakeoutAuthorization || syncState.status !== 'error') {
+      return;
+    }
+
+    if (takeoutHelpShownAtRef.current === syncState.updatedAt) {
+      return;
+    }
+
+    takeoutHelpShownAtRef.current = syncState.updatedAt;
+    setIsTakeoutHelpOpen(true);
+  }, [syncState.requiresTakeoutAuthorization, syncState.status, syncState.updatedAt]);
+
+  const applyCustomStartTime = useLastCallback((startAt: number) => {
+    const normalizedEndAt = Date.now();
+    if (!startAt || !normalizedEndAt || startAt >= normalizedEndAt) {
       return;
     }
 
@@ -443,8 +735,8 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
       chatId,
       timeRange: {
         mode: 'custom',
-        startAt: customStartAt,
-        endAt: customEndAt,
+        startAt,
+        endAt: normalizedEndAt,
       },
     });
   });
@@ -462,44 +754,15 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     setPrompt('');
   });
 
-  const handlePromptKeyDown = useLastCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+  const handlePromptKeyDown = useLastCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const isComposing = Boolean(e.isComposing || e.nativeEvent?.isComposing);
+    if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
       e.preventDefault();
       if (isStreaming) {
         cancelAiPrompt();
         return;
       }
       handleSendPrompt();
-    }
-  });
-
-  const handleInsert = useLastCallback((text: string) => {
-    openChatWithDraft({
-      chatId,
-      threadId,
-      text: { text },
-    });
-    showNotification({ message: '已插入输入框' });
-  });
-
-  const handleCopy = useLastCallback((text: string) => {
-    copyTextToClipboard(text);
-    showNotification({ message: '已复制到剪贴板' });
-  });
-
-  const handleClearHistory = useLastCallback(() => {
-    clearAiTurns();
-    setPrompt('');
-    showNotification({ message: '已清空历史记录' });
-  });
-
-  const handleRetry = useLastCallback((assistantIndex: number) => {
-    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
-      const turn = turns[i];
-      if (turn.role === 'user') {
-        requestAiPrompt({ prompt: turn.text });
-        return;
-      }
     }
   });
 
@@ -633,27 +896,61 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
           </div>
           <div className="AiAssistant__syncMetrics">
             <span>
-              总消息：
+              总量：
               {syncState.totalMessages || 0}
             </span>
             <span>
               已同步：
               {syncState.syncedMessages}
             </span>
-            <span>
-              未同步：
-              {syncState.unsyncedMessages}
-            </span>
           </div>
-          <div className="AiAssistant__syncProgressTrack">
-            <div className="AiAssistant__syncProgressFill" style={`width: ${syncProgress}%`} />
-          </div>
+          {(!isRangeScopedSync || hasReliableScopedTotal) && (
+            <div className="AiAssistant__syncProgressTrack">
+              <div className="AiAssistant__syncProgressFill" style={`width: ${syncProgress}%`} />
+            </div>
+          )}
           <div className="AiAssistant__syncOldest">
-            最早已同步到：
-            {oldestSyncedDateText}
+            已同步时间：
+            {syncedRangeStartText}
+            {' '}
+            至
+            {' '}
+            {syncedRangeEndText}
           </div>
+          {syncState.status === 'syncing' && syncNoProgressSeconds >= 10 && (
+            <div className="AiAssistant__syncHint">
+              {syncNoProgressSeconds >= 45
+                ? `同步可能卡住（${syncNoProgressSeconds} 秒无进展），建议暂停后继续同步`
+                : `正在同步中，最近 ${syncNoProgressSeconds} 秒无新增进展`}
+            </div>
+          )}
           {syncState.error && (
-            <div className="AiAssistant__syncError">{syncState.error}</div>
+            <div className="AiAssistant__syncError">
+              <div>{syncState.error}</div>
+              {syncErrorCode && (
+                <div className="AiAssistant__syncErrorCode">
+                  错误码：
+                  {' '}
+                  {syncErrorCode}
+                </div>
+              )}
+              {syncErrorDetail && (
+                <div className="AiAssistant__syncErrorDetail">
+                  详情：
+                  {' '}
+                  {syncErrorDetail}
+                </div>
+              )}
+              {syncState.requiresTakeoutAuthorization && (
+                <button
+                  type="button"
+                  className="AiAssistant__syncErrorAction"
+                  onClick={() => setIsTakeoutHelpOpen(true)}
+                >
+                  查看授权指引
+                </button>
+              )}
+            </div>
           )}
           <div className="AiAssistant__syncActions">
             <div className="AiAssistant__syncPrimarySlot">
@@ -677,6 +974,16 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                 </Button>
               )}
             </div>
+            <button
+              type="button"
+              className="AiAssistant__syncSettingsTrigger"
+              onClick={() => setIsHistoryBrowserOpen((current) => !current)}
+              aria-label="按日期查看聊天记录"
+              title="按日期查看聊天记录"
+              disabled={!syncState.syncedMessages}
+            >
+              <Icon name="calendar" />
+            </button>
             <button
               type="button"
               className="AiAssistant__syncSettingsTrigger"
@@ -741,62 +1048,31 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
             )}
 
             <div className="AiAssistant__syncRange">
-              <label className="AiAssistant__syncRangeLabel" htmlFor={`chat-sync-range-${chatId}`}>
-                时间范围
+              <label className="AiAssistant__syncRangeLabel" htmlFor={`chat-sync-start-${chatId}`}>
+                开始时间
               </label>
-              <select
-                id={`chat-sync-range-${chatId}`}
-                className="AiAssistant__syncRangeSelect"
-                value={selectedRangeOption}
-                onChange={(e) => handleRangeSelect(e.currentTarget.value as RangeOption)}
-                disabled={syncState.status === 'syncing'}
-              >
-                <option value="all">全部时间</option>
-                <option value="today">{PRESET_LABELS.today}</option>
-                <option value="yesterday">{PRESET_LABELS.yesterday}</option>
-                <option value="thisWeek">{PRESET_LABELS.thisWeek}</option>
-                <option value="lastWeek">{PRESET_LABELS.lastWeek}</option>
-                <option value="thisMonth">{PRESET_LABELS.thisMonth}</option>
-                <option value="custom">自定义</option>
-              </select>
+              <div className="AiAssistant__syncRangeHint">
+                结束时间固定为现在（今天），只需选择起始时间。
+              </div>
             </div>
 
-            {selectedRangeOption === 'custom' && (
-              <div className="AiAssistant__syncCustomRange">
-                <input
-                  className="AiAssistant__syncCustomInput"
-                  type="datetime-local"
-                  value={toDateTimeLocalValue(customStartAt)}
-                  onChange={(e) => {
-                    const nextTimestamp = new Date(e.currentTarget.value).getTime();
-                    if (!Number.isNaN(nextTimestamp)) {
-                      setCustomStartAt(nextTimestamp);
-                    }
-                  }}
-                  disabled={syncState.status === 'syncing'}
-                />
-                <span className="AiAssistant__syncCustomSeparator">到</span>
-                <input
-                  className="AiAssistant__syncCustomInput"
-                  type="datetime-local"
-                  value={toDateTimeLocalValue(customEndAt)}
-                  onChange={(e) => {
-                    const nextTimestamp = new Date(e.currentTarget.value).getTime();
-                    if (!Number.isNaN(nextTimestamp)) {
-                      setCustomEndAt(nextTimestamp);
-                    }
-                  }}
-                  disabled={syncState.status === 'syncing'}
-                />
-                <Button
-                  size="smaller"
-                  disabled={syncState.status === 'syncing' || customStartAt >= customEndAt}
-                  onClick={handleApplyCustomRange}
-                >
-                  应用
-                </Button>
-              </div>
-            )}
+            <div className="AiAssistant__syncCustomRange">
+              <input
+                id={`chat-sync-start-${chatId}`}
+                className="AiAssistant__syncCustomInput"
+                type="datetime-local"
+                value={toDateTimeLocalValue(customStartAt)}
+                max={toDateTimeLocalValue(Date.now())}
+                onChange={(e) => {
+                  const nextTimestamp = new Date(e.currentTarget.value).getTime();
+                  if (!Number.isNaN(nextTimestamp)) {
+                    setCustomStartAt(nextTimestamp);
+                    applyCustomStartTime(nextTimestamp);
+                  }
+                }}
+                disabled={syncState.status === 'syncing'}
+              />
+            </div>
             <div className="AiAssistant__syncSettingsActions">
               <Button
                 size="smaller"
@@ -812,6 +1088,260 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {isSupportedChat && isTakeoutHelpOpen && syncState.requiresTakeoutAuthorization && (
+        <div
+          className="AiAssistant__syncSettingsBackdrop AiAssistant__takeoutHelpBackdrop"
+          onClick={() => setIsTakeoutHelpOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="AiAssistant__takeoutHelp"
+            onClick={(e) => e.stopPropagation()}
+            role="presentation"
+          >
+            <div className="AiAssistant__takeoutHelpHeader">
+              <div className="AiAssistant__takeoutHelpTitle">Data Export 需要授权确认</div>
+              <button
+                type="button"
+                className="AiAssistant__syncSettingsClose"
+                onClick={() => setIsTakeoutHelpOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+            <div className="AiAssistant__takeoutHelpBody">
+              <div className="AiAssistant__takeoutHelpText">
+                Telegram 会对 Data Export 做安全校验，请先在官方客户端确认导出请求。
+              </div>
+              {takeoutDelayText && (
+                <div className="AiAssistant__takeoutHelpText">
+                  当前建议等待约
+                  {' '}
+                  <strong>{takeoutDelayText}</strong>
+                  {' '}
+                  后重试（约
+                  {' '}
+                  <strong>{takeoutRetryAtText}</strong>
+                  {' '}
+                  ）。
+                </div>
+              )}
+              <div className="AiAssistant__takeoutHelpSteps">
+                <div className="AiAssistant__takeoutHelpStep">1. 在手机或 Telegram Desktop 打开同一账号。</div>
+                <div className="AiAssistant__takeoutHelpStep">2. 查看 Telegram 的安全通知或服务消息并确认授权。</div>
+                <div className="AiAssistant__takeoutHelpStep">3. 回到这里点击“重新同步”。</div>
+              </div>
+              <div className="AiAssistant__takeoutHelpHint">
+                如果没收到通知，请保持官方客户端在线几分钟后再试一次。
+              </div>
+            </div>
+            <div className="AiAssistant__takeoutHelpActions">
+              <Button
+                size="smaller"
+                color="translucent"
+                onClick={() => setIsTakeoutHelpOpen(false)}
+              >
+                我知道了
+              </Button>
+              <Button
+                size="smaller"
+                color="primary"
+                onClick={() => {
+                  setIsTakeoutHelpOpen(false);
+                  resetChatSync({ chatId, threadId: resolvedThreadId });
+                  startChatSync({ chatId, threadId: resolvedThreadId });
+                }}
+              >
+                重新同步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSupportedChat && (
+        <Modal
+          isOpen={isHistoryBrowserOpen}
+          onClose={() => setIsHistoryBrowserOpen(false)}
+          title="按日期查看聊天记录"
+          hasCloseButton
+          className="AiAssistant__historyModal"
+          contentClassName="AiAssistant__historyModalContent"
+          dialogClassName="AiAssistant__historyModalDialog"
+        >
+          <div className="AiAssistant__historyBrowser">
+            <div className="AiAssistant__historyBrowserHeader">
+              {selectedHistoryDay ? (
+                <button
+                  type="button"
+                  className="AiAssistant__historyBack"
+                  onClick={() => {
+                    setSelectedHistoryDayStartSec(undefined);
+                    if (!isHistoryGlobalSearchActive) {
+                      setHistoryMessages([]);
+                    }
+                    setHistoryError(undefined);
+                  }}
+                >
+                  {isHistoryGlobalSearchActive ? '清除日期筛选' : '返回日期列表'}
+                </button>
+              ) : (
+                <div className="AiAssistant__historyTitle">按日期查看聊天记录</div>
+              )}
+              <div className="AiAssistant__historyMeta">
+                当前范围本地已同步
+                {' '}
+                {syncState.syncedMessages}
+                {' '}
+                条
+              </div>
+            </div>
+
+            <div className="AiAssistant__historyGlobalSearchBar">
+              <input
+                type="search"
+                className="AiAssistant__historySearch is-global"
+                value={historyGlobalQuery}
+                placeholder="搜索当前范围内的全部聊天记录关键词"
+                onChange={(e) => setHistoryGlobalQuery(e.currentTarget.value)}
+              />
+              <div className="AiAssistant__historySearchHint">
+                {isHistoryGlobalSearchActive
+                  ? '正在全局搜索本地历史记录，可继续点左侧日期缩小范围。'
+                  : '这里的搜索会检索当前时间范围内的全部本地历史记录。'}
+              </div>
+            </div>
+
+            {historyError && (
+              <div className="AiAssistant__historyEmpty">
+                {historyError}
+              </div>
+            )}
+
+            {!historyError && (
+              <div className="AiAssistant__historyBrowserGrid">
+                <div className="AiAssistant__historyPane is-days">
+                  <input
+                    type="search"
+                    className="AiAssistant__historySearch"
+                    value={historyDayQuery}
+                    placeholder="搜索日期，如 2026-04-11"
+                    onChange={(e) => setHistoryDayQuery(e.currentTarget.value)}
+                  />
+                  <div className="AiAssistant__historyDayList">
+                    {isHistoryDaysLoading ? (
+                      <div className="AiAssistant__historyEmpty">正在读取日期列表...</div>
+                    ) : filteredHistoryDays.length ? filteredHistoryDays.map((day) => (
+                      <button
+                        type="button"
+                        key={day.dayKey}
+                        className="AiAssistant__historyDay"
+                        onClick={() => setSelectedHistoryDayStartSec(day.dayStartSec)}
+                      >
+                        <span className="AiAssistant__historyDayLabel">{day.label}</span>
+                        <span className="AiAssistant__historyDayCount">
+                          {day.count}
+                          {' '}
+                          条
+                        </span>
+                      </button>
+                    )) : (
+                      <div className="AiAssistant__historyEmpty">没有匹配这个日期的本地记录</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="AiAssistant__historyPane is-messages">
+                  {selectedHistoryDay || isHistoryGlobalSearchActive ? (
+                    <>
+                      <div className="AiAssistant__historyPaneTop">
+                        <div className="AiAssistant__historyDayHeading">
+                          {isHistoryGlobalSearchActive
+                            ? selectedHistoryDay
+                              ? `${selectedHistoryDay.label} · 搜索结果 ${visibleHistoryMessages.length} 条`
+                              : `全局搜索结果 · ${visibleHistoryMessages.length} 条`
+                            : `${selectedHistoryDay?.label || ''} · ${selectedHistoryDay?.count || 0} 条`}
+                        </div>
+                        {isHistoryGlobalSearchActive && (
+                          <div className="AiAssistant__historyPaneHint">
+                            显示当前范围内匹配关键词的历史消息，按时间倒序排列。
+                          </div>
+                        )}
+                      </div>
+                      <div className="AiAssistant__historyMessages">
+                        {isHistoryGlobalSearchActive ? (
+                          isHistorySearchLoading ? (
+                            <div className="AiAssistant__historyEmpty">正在搜索全部聊天记录...</div>
+                          ) : visibleHistoryMessages.length ? visibleHistoryMessages.map((message) => (
+                            <button
+                              type="button"
+                              key={message.messageId}
+                              className="AiAssistant__historyMessage"
+                              onClick={() => {
+                                setIsHistoryBrowserOpen(false);
+                                focusMessage({
+                                  chatId,
+                                  messageId: message.messageId,
+                                  scrollTargetPosition: 'centerOrTop',
+                                });
+                              }}
+                            >
+                              <div className="AiAssistant__historyMessageMeta">
+                                <span>
+                                  {message.dayLabel}
+                                  {' '}
+                                  {message.timeText}
+                                </span>
+                                <span>{message.sender}</span>
+                              </div>
+                              <div className="AiAssistant__historyMessageText">
+                                {message.text}
+                              </div>
+                            </button>
+                          )) : (
+                            <div className="AiAssistant__historyEmpty">当前范围内没有匹配这个关键词的本地聊天记录</div>
+                          )
+                        ) : isHistoryMessagesLoading ? (
+                          <div className="AiAssistant__historyEmpty">正在读取当天消息...</div>
+                        ) : visibleHistoryMessages.length ? visibleHistoryMessages.map((message) => (
+                          <button
+                            type="button"
+                            key={message.messageId}
+                            className="AiAssistant__historyMessage"
+                            onClick={() => {
+                              setIsHistoryBrowserOpen(false);
+                              focusMessage({
+                                chatId,
+                                messageId: message.messageId,
+                                scrollTargetPosition: 'centerOrTop',
+                              });
+                            }}
+                          >
+                            <div className="AiAssistant__historyMessageMeta">
+                              <span>{message.timeText}</span>
+                              <span>{message.sender}</span>
+                            </div>
+                            <div className="AiAssistant__historyMessageText">
+                              {message.text}
+                            </div>
+                          </button>
+                        )) : (
+                          <div className="AiAssistant__historyEmpty">这一天还没有本地已同步消息</div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="AiAssistant__historyEmpty">
+                      从左侧选择一个日期，就能查看当天的本地聊天记录。
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
       )}
 
       {!hasApiKey && (
@@ -848,7 +1378,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                   key={`${turn.createdAt}_${index}`}
                   className={buildClassName('AiAssistant__message', `is-${turn.role}`)}
                 >
-                  <div className="AiAssistant__message-role">{turn.role === 'user' ? '你' : 'AI 助手'}</div>
                   {turn.role === 'assistant' && turn.thinkingLog && (
                     renderThinkingDisclosure({
                       log: turn.thinkingLog,
@@ -859,31 +1388,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                   <div className="AiAssistant__message-text allow-selection">
                     {turn.role === 'assistant' ? renderAssistantContent(normalizedText) : normalizedText}
                   </div>
-                  {turn.role === 'assistant' && (
-                    <div className="AiAssistant__message-tools">
-                      <button
-                        type="button"
-                        className="AiAssistant__tool"
-                        onClick={() => handleInsert(normalizedText)}
-                      >
-                        插入
-                      </button>
-                      <button
-                        type="button"
-                        className="AiAssistant__tool"
-                        onClick={() => handleCopy(normalizedText)}
-                      >
-                        复制
-                      </button>
-                      <button
-                        type="button"
-                        className="AiAssistant__tool"
-                        onClick={() => handleRetry(index)}
-                      >
-                        重试
-                      </button>
-                    </div>
-                  )}
                 </div>
               );
             })()
@@ -994,13 +1498,14 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
       </div>
 
       <div className="AiAssistant__composer-shell">
-        <div className="AiAssistant__composer-row">
-          <div className="AiAssistant__composer-bar">
-            <InputText
+        <div className="AiAssistant__composer-bar">
+          <div className="AiAssistant__composer-row">
+            <TextArea
               className="AiAssistant__composer-input"
               value={prompt}
-              placeholder={isStreaming ? 'AI 正在处理，点击右侧可中止' : '输入问题，AI 会自己判断要不要读取聊天记录'}
+              placeholder="输入问题…"
               disabled={isStreaming}
+              noReplaceNewlines
               onKeyDown={handlePromptKeyDown}
               onChange={(e) => setPrompt(e.currentTarget.value)}
             />
@@ -1008,25 +1513,18 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
           <div className="AiAssistant__composer-actions">
             <button
               type="button"
-              className="AiAssistant__clearHistory"
-              onClick={handleClearHistory}
-              disabled={!hasTurns && !hasLiveRun}
-              aria-label="清空历史"
-              title="清空历史"
-            >
-              <Icon name="delete" className="AiAssistant__clearHistory-icon" />
-            </button>
-            <button
-              type="button"
               className={buildClassName('AiAssistant__send is-round', isStreaming && 'is-stop')}
               onClick={handleSendPrompt}
               disabled={isStreaming ? isCancelling : (!hasApiKey || !prompt.trim() || Boolean(isLoading))}
               aria-label={isStreaming ? '中止' : '发送'}
             >
-              <Icon name={isStreaming ? 'close' : 'send'} className="AiAssistant__send-icon" />
+              <Icon name={isStreaming ? 'close' : 'up'} className="AiAssistant__send-icon" />
             </button>
           </div>
         </div>
+        {isStreaming && (
+          <div className="AiAssistant__composer-status">正在处理，可点发送按钮中止</div>
+        )}
       </div>
     </div>
   );

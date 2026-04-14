@@ -425,6 +425,10 @@ export interface ActionPayloads {
   requestAiSummaryToday: WithTabId | undefined;
   requestAiReplySuggestions: WithTabId | undefined;
   requestAiExtractTodos: WithTabId | undefined;
+  hydrateAiAssistantSession: ({
+    chatId: string;
+    threadId?: ThreadId;
+  } & WithTabId) | undefined;
   setIsUiReady: {
     uiReadyState: 0 | 1 | 2;
   } & WithTabId;
@@ -968,6 +972,10 @@ export interface ActionPayloads {
     leftColumnWidth: number;
   };
   resetLeftColumnWidth: undefined;
+  setRightColumnWidth: {
+    rightColumnWidth: number;
+  };
+  resetRightColumnWidth: undefined;
 
   copySelectedMessages: WithTabId | undefined;
   copyMessagesByIds: {

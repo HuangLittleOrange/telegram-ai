@@ -107,7 +107,8 @@ pub fn run() {
     .plugin(tauri_plugin_log::Builder::default().build())
     .plugin(tauri_plugin_window_state::Builder::default().build())
     .plugin(tauri_plugin_deep_link::init())
-    .plugin(tauri_plugin_process::init());
+    .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_sql::Builder::default().build());
 
   let app = app.on_window_event(|window, event| match event {
     tauri::WindowEvent::CloseRequested { api, .. } => {

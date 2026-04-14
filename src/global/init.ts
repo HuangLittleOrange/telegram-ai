@@ -13,6 +13,7 @@ import { Bundles, loadBundle } from '../util/moduleLoader';
 import { parseLocationHash } from '../util/routing';
 import { updatePeerColors } from '../util/theme';
 import { runMessageFetch } from './helpers/messageFetch';
+import { ensureSyncedMessagesMigration } from './helpers/syncedMessagesStore';
 import { initializeChatMediaSearchResults } from './reducers/middleSearch';
 import { updateTabState } from './reducers/tabs';
 import { replaceTabThreadParam, replaceThreadLocalStateParam } from './reducers/threads';
@@ -28,6 +29,13 @@ import { selectChat } from './selectors';
 import { selectTabState } from './selectors';
 
 initCache();
+
+function scheduleSyncedMessagesMigration() {
+  setTimeout(() => {
+    const global = getGlobal();
+    void ensureSyncedMessagesMigration(global);
+  }, 0);
+}
 
 addActionHandler('initShared', async (prevGlobal, actions, payload): Promise<void> => {
   const { force } = payload || {};
@@ -187,9 +195,13 @@ addActionHandler('init', (global, actions, payload): ActionReturnType => {
     updatePeerColors(global.peerColors.general);
   }
 
-  return updateTabState(global, {
+  const nextGlobal = updateTabState(global, {
     messageLists: parsedMessageList ? [parsedMessageList] : initialTabState.messageLists,
   }, tabId);
+
+  scheduleSyncedMessagesMigration();
+
+  return nextGlobal;
 });
 
 addActionHandler('requestMasterAndCallAction', async (

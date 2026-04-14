@@ -256,6 +256,8 @@ const SettingsHeader: FC<OwnProps> = ({
 
       case SettingsScreens.Passkeys:
         return <h3>{lang('SettingsPasskeyTitle')}</h3>;
+      case SettingsScreens.Ai:
+        return <h3>AI 设置</h3>;
 
       default:
         return (

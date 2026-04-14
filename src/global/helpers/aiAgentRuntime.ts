@@ -59,9 +59,10 @@ export async function resolveAiAgentConversation(args: RunAiAgentLoopArgs): Prom
       tool_calls: toolCalls,
     });
 
-    const firstCall = toolCalls[0];
-    const toolMessage = await executeTool(firstCall);
-    conversation.push(toolMessage);
+    for (const toolCall of toolCalls) {
+      const toolMessage = await executeTool(toolCall);
+      conversation.push(toolMessage);
+    }
   }
 
   throw new Error(`AI agent loop exceeded ${maxSteps} steps`);
@@ -89,9 +90,10 @@ export async function runAiAgentLoop(args: RunAiAgentLoopArgs): Promise<AiAgentL
         tool_calls: toolCalls,
       });
 
-      const firstCall = toolCalls[0];
-      const toolMessage = await executeTool(firstCall);
-      conversation.push(toolMessage);
+      for (const toolCall of toolCalls) {
+        const toolMessage = await executeTool(toolCall);
+        conversation.push(toolMessage);
+      }
       continue;
     }
 

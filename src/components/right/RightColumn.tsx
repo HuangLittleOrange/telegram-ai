@@ -22,11 +22,13 @@ import useCurrentOrPrev from '../../hooks/useCurrentOrPrev';
 import useHistoryBack from '../../hooks/useHistoryBack';
 import useLastCallback from '../../hooks/useLastCallback';
 import useLayoutEffectWithPrevDeps from '../../hooks/useLayoutEffectWithPrevDeps';
+import { useResize } from '../../hooks/useResize';
 import useScrollNotch from '../../hooks/useScrollNotch.ts';
 import useWindowSize from '../../hooks/window/useWindowSize';
 
 import Transition from '../ui/Transition';
 import AddChatMembers from './AddChatMembers';
+import AiAssistant from './AiAssistant';
 import CreateTopic from './CreateTopic.async';
 import EditTopic from './EditTopic.async';
 import GifSearch from './GifSearch.async';
@@ -59,11 +61,13 @@ type StateProps = {
   isSavedMessages?: boolean;
   isSavedDialog?: boolean;
   isOwnProfile?: boolean;
+  rightColumnWidth?: number;
 };
 
 const ANIMATION_DURATION = 450 + ANIMATION_END_DELAY;
 const MAIN_SCREENS_COUNT = Object.keys(RightColumnContent).length / 2;
 const MANAGEMENT_SCREENS_COUNT = Object.keys(ManagementScreens).length / 2;
+const MIN_RIGHT_COLUMN_WIDTH = 20 * 16;
 
 function blurSearchInput() {
   const searchInput = document.querySelector('.RightHeader .SearchInput input') as HTMLInputElement;
@@ -85,6 +89,7 @@ const RightColumn: FC<OwnProps & StateProps> = ({
   isSavedMessages,
   isSavedDialog,
   isOwnProfile,
+  rightColumnWidth,
 }) => {
   const {
     toggleChatInfo,
@@ -98,6 +103,7 @@ const RightColumn: FC<OwnProps & StateProps> = ({
     toggleStatistics,
     toggleMessageStatistics,
     toggleStoryStatistics,
+    toggleAiAssistant,
     setOpenedInviteInfo,
     requestNextManagementScreen,
     closeCreateTopicPanel,
@@ -105,9 +111,12 @@ const RightColumn: FC<OwnProps & StateProps> = ({
     closeBoostStatistics,
     setShouldCloseRightColumn,
     closeMonetizationStatistics,
+    setRightColumnWidth,
+    resetRightColumnWidth,
   } = getActions();
 
   const containerRef = useRef<HTMLDivElement>();
+  const rightColumnRef = useRef<HTMLDivElement>();
 
   const { width: windowWidth } = useWindowSize();
   const [profileState, setProfileState] = useState<ProfileState>(
@@ -120,6 +129,7 @@ const RightColumn: FC<OwnProps & StateProps> = ({
 
   const isOpen = contentKey !== undefined;
   const isProfile = contentKey === RightColumnContent.ChatInfo;
+  const isAiAssistant = contentKey === RightColumnContent.AiAssistant;
   const isManagement = contentKey === RightColumnContent.Management;
   const isStatistics = contentKey === RightColumnContent.Statistics;
   const isMessageStatistics = contentKey === RightColumnContent.MessageStatistics;
@@ -137,6 +147,26 @@ const RightColumn: FC<OwnProps & StateProps> = ({
   const [shouldSkipTransition, setShouldSkipTransition] = useState(!isOpen);
 
   const renderingContentKey = useCurrentOrPrev(contentKey, true, !isChatSelected) ?? -1;
+  const maxRightColumnWidth = Math.max(
+    MIN_RIGHT_COLUMN_WIDTH,
+    Math.floor(windowWidth * 0.5),
+  );
+
+  const {
+    initResize, resetResize, handleMouseUp,
+  } = useResize(
+    rightColumnRef,
+    (n) => setRightColumnWidth({ rightColumnWidth: n }),
+    resetRightColumnWidth,
+    rightColumnWidth,
+    '--right-column-width',
+    {
+      direction: -1,
+      minWidth: MIN_RIGHT_COLUMN_WIDTH,
+      maxWidth: maxRightColumnWidth,
+      cssPropertyTarget: 'root',
+    },
+  );
 
   useScrollNotch({
     containerRef,
@@ -154,6 +184,9 @@ const RightColumn: FC<OwnProps & StateProps> = ({
           break;
         }
         toggleChatInfo({ force: false }, { forceSyncOnIOs: true });
+        break;
+      case RightColumnContent.AiAssistant:
+        toggleAiAssistant({ force: false }, { forceSyncOnIOs: true });
         break;
       case RightColumnContent.Management: {
         switch (managementScreen) {
@@ -287,6 +320,7 @@ const RightColumn: FC<OwnProps & StateProps> = ({
   useHistoryBack({
     isActive: isChatSelected && (
       contentKey === RightColumnContent.ChatInfo
+      || contentKey === RightColumnContent.AiAssistant
       || contentKey === RightColumnContent.Management
       || contentKey === RightColumnContent.AddingMembers
       || contentKey === RightColumnContent.CreateTopic
@@ -320,6 +354,15 @@ const RightColumn: FC<OwnProps & StateProps> = ({
             isMobile={isMobile}
             isActive={isOpen && isActive}
             onProfileStateChange={setProfileState}
+          />
+        );
+      case RightColumnContent.AiAssistant:
+        return (
+          <AiAssistant
+            key={`ai_assistant_${chatId!}_${threadId}`}
+            chatId={chatId!}
+            threadId={threadId}
+            isActive={isOpen && isActive}
           />
         );
       case RightColumnContent.Management:
@@ -370,12 +413,21 @@ const RightColumn: FC<OwnProps & StateProps> = ({
       {isOverlaying && (
         <div className="overlay-backdrop" onClick={close} />
       )}
-      <div id="RightColumn">
+      <div id="RightColumn" ref={rightColumnRef}>
+        {!isOverlaying && (
+          <div
+            className="right-resize-handle"
+            onMouseDown={initResize}
+            onMouseUp={handleMouseUp}
+            onDoubleClick={resetResize}
+          />
+        )}
         <RightHeader
           chatId={chatId}
           threadId={threadId}
           isColumnOpen={isOpen}
           isProfile={isProfile}
+          isAiAssistant={isAiAssistant}
           isManagement={isManagement}
           isStatistics={isStatistics}
           isBoostStatistics={isBoostStatistics}
@@ -439,6 +491,7 @@ export default memo(withGlobal<OwnProps>(
       isSavedMessages,
       isSavedDialog,
       isOwnProfile,
+      rightColumnWidth: global.rightColumnWidth,
     };
   },
 )(RightColumn));

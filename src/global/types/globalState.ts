@@ -79,23 +79,71 @@ import type {
 } from '../../types';
 import type { RegularLangFnParameters } from '../../util/localization';
 import type { SharedState } from './sharedState';
-import type { TabState, TimeRange } from './tabState';
+import type { TabState, TimeRange, ToolOutput } from './tabState';
 
 export type ChatSyncMethod = 'dataExport' | 'getHistory';
 export type ChatSyncStatus = 'idle' | 'syncing' | 'paused' | 'completed' | 'error';
 
+export type PersistedAiAssistantTurn = {
+  role: 'user' | 'assistant';
+  text: string;
+  createdAt: number;
+  thinkingLog?: {
+    startedAt: number;
+    endedAt?: number;
+    steps: {
+      stage: 'retriever' | 'answer' | 'summary';
+      title: string;
+      detail?: string;
+      createdAt: number;
+    }[];
+  };
+};
+
+export type PersistedAiAssistantHistoryMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: {
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }[];
+};
+
+export type PersistedAiAssistantSession = {
+  contextLimit: number;
+  turns: PersistedAiAssistantTurn[];
+  historyMessages: PersistedAiAssistantHistoryMessage[];
+  toolOutputHistory: ToolOutput[];
+  updatedAt: number;
+};
+
 export type ChatSyncState = {
   selectedMethod: ChatSyncMethod;
+  hasSyncedOnce?: boolean;
+  hasAccurateScopedTotalMessages?: boolean;
+  lastProgressAt?: number;
   selectedTimeRange?: TimeRange;
   totalMessages?: number;
+  scopedTotalMessages?: number;
   syncedMessages: number;
   unsyncedMessages: number;
   oldestSyncedDate?: number;
+  newestSyncedDate?: number;
   status: ChatSyncStatus;
   cursorMessageId?: number;
   takeoutId?: string;
+  requiresTakeoutAuthorization?: boolean;
+  takeoutInitDelaySeconds?: number;
   isStatsLoading?: boolean;
   error?: string;
+  errorCode?: string;
+  errorDetail?: string;
   updatedAt?: number;
 };
 
@@ -119,12 +167,16 @@ export type GlobalState = {
   isSynced?: boolean;
   isFetchingDifference?: boolean;
   leftColumnWidth?: number;
+  rightColumnWidth?: number;
   lastIsChatInfoShown?: boolean;
   initialUnreadNotifications?: number;
   shouldShowContextMenuHint?: boolean;
   botFreezeAppealId?: string;
   chatSync: {
     byChatId: Record<string, ChatSyncState>;
+  };
+  aiAssistantSessions: {
+    byKey: Record<string, PersistedAiAssistantSession>;
   };
 
   audioPlayer: {

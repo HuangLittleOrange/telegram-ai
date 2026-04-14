@@ -1,4 +1,4 @@
-import type { ApiMessage } from '../../../api/types';
+import type { ThreadId } from '../../../types';
 import type { ActionReturnType, GlobalState, RequiredGlobalState } from '../../types';
 import type { AiStreamEvent, AiStreamStage } from '../../types/aiStream';
 import type {
@@ -8,8 +8,7 @@ import type {
 import { MAIN_THREAD_ID } from '../../../api/types';
 
 import { getCurrentTabId } from '../../../util/establishMultitabRole';
-import { getTranslationFn } from '../../../util/localization';
-import { forceUpdateCache, loadCachedGlobal } from '../../cache';
+import { forceUpdateCache } from '../../cache';
 import {
   buildAiTaskPrompt,
   buildHistoryFetchFallbackAnswer,
@@ -17,18 +16,16 @@ import {
   formatAiPromptConversationContextLines,
   formatAiPromptEvidenceLines,
   formatAiPromptToolOutputLines,
-  formatHistoryFetchFloodWaitProgress,
-  formatHistoryFetchPageProgress,
   getAiApiUrl,
+  parseAnthropicAssistantText,
   parseGeminiAssistantText,
   parseOpenAiAssistantText,
-  pickRecentMessageIds,
   sanitizeAssistantText,
 } from '../../helpers/ai';
 import {
   buildAiRequestSystemPrompt,
 } from '../../helpers/aiContext';
-import { persistFetchedMessages, persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence';
+import { persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence';
 import {
   buildHistoryFetchToolDefinition,
 } from '../../helpers/aiSkills';
@@ -39,8 +36,6 @@ import {
 } from '../../helpers/aiAgentRuntime';
 import {
   type AiEvidenceItem,
-  type AiEvidenceSource,
-  dedupeAiEvidence,
 } from '../../helpers/aiOrchestrator';
 import { runAiQueryLoop } from '../../helpers/aiQueryLoop';
 import aiRunController from '../../helpers/aiRunController';
@@ -65,21 +60,15 @@ import {
   runMessageFetch,
   runMessageFetchWithContinuation,
 } from '../../helpers/messageFetch';
-import { getMessageSummaryText } from '../../helpers/messageSummary';
-import { getPeerTitle } from '../../helpers/peers';
 import {
   addActionHandler,
   getGlobal,
   setGlobal,
 } from '../../index';
-import { addMessages } from '../../reducers/messages';
 import { updateTabState } from '../../reducers/tabs';
 import {
-  selectChatMessages,
   selectCurrentMessageList,
-  selectSender,
   selectTabState,
-  selectViewportIds,
 } from '../../selectors';
 
 const QUICK_PROMPTS = {
@@ -101,6 +90,11 @@ const QUICK_PROMPTS = {
 };
 
 const MAX_AI_TOOL_OUTPUTS = 8;
+const MAX_PERSISTED_AI_ASSISTANT_SESSIONS = 120;
+const AI_ASSISTANT_SESSION_KEY_PREFIX = 'ai';
+const AI_ASSISTANT_SESSION_DEFAULT_SCOPE = 'default';
+
+type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
 type AiStreamEventInput = AiStreamEvent extends infer Event
   ? Event extends { runId: string; createdAt: number }
@@ -109,6 +103,163 @@ type AiStreamEventInput = AiStreamEvent extends infer Event
   : never;
 
 const EMPTY_AI_ASSISTANT_STATE = createEmptyAiAssistantState();
+
+type AiAssistantSessionScope = {
+  chatId?: string;
+  threadId?: ThreadId;
+};
+
+function buildAiAssistantSessionKey(
+  global: GlobalState,
+  chatId?: string,
+  threadId?: ThreadId,
+) {
+  if (!chatId) {
+    return undefined;
+  }
+
+  const accountId = global.currentUserId || AI_ASSISTANT_SESSION_DEFAULT_SCOPE;
+  const normalizedThreadId = threadId ?? MAIN_THREAD_ID;
+
+  return `${AI_ASSISTANT_SESSION_KEY_PREFIX}:${accountId}:${chatId}:${normalizedThreadId}`;
+}
+
+function resolveAiAssistantSessionKey(
+  global: GlobalState,
+  tabId: number,
+  scope?: AiAssistantSessionScope,
+) {
+  const currentMessageList = selectCurrentMessageList(global, tabId);
+  const chatId = scope?.chatId || currentMessageList?.chatId;
+  const threadId = scope?.threadId ?? currentMessageList?.threadId ?? MAIN_THREAD_ID;
+
+  return buildAiAssistantSessionKey(global, chatId, threadId);
+}
+
+function trimAiAssistantSessions(
+  byKey: GlobalState['aiAssistantSessions']['byKey'],
+): GlobalState['aiAssistantSessions']['byKey'] {
+  const entries = Object.entries(byKey);
+  if (entries.length <= MAX_PERSISTED_AI_ASSISTANT_SESSIONS) {
+    return byKey;
+  }
+
+  return Object.fromEntries(entries
+    .sort(([, left], [, right]) => (right.updatedAt || 0) - (left.updatedAt || 0))
+    .slice(0, MAX_PERSISTED_AI_ASSISTANT_SESSIONS));
+}
+
+function getAiAssistantSessionByKey(
+  global: GlobalState,
+  key?: string,
+) {
+  return key ? global.aiAssistantSessions?.byKey?.[key] : undefined;
+}
+
+function buildPersistedAiAssistantState(
+  aiAssistant: ReturnType<typeof createEmptyAiAssistantState>,
+  fallbackContextLimit: number,
+): GlobalState['aiAssistantSessions']['byKey'][string] {
+  return {
+    contextLimit: clampAiContextLimit(aiAssistant.contextLimit, fallbackContextLimit),
+    turns: (aiAssistant.turns || []).map((turn) => ({
+      role: turn.role,
+      text: turn.text,
+      createdAt: turn.createdAt,
+      thinkingLog: turn.thinkingLog ? {
+        startedAt: turn.thinkingLog.startedAt,
+        endedAt: turn.thinkingLog.endedAt,
+        steps: (turn.thinkingLog.steps || []).map((step) => ({
+          stage: step.stage,
+          title: step.title,
+          detail: step.detail,
+          createdAt: step.createdAt,
+        })),
+      } : undefined,
+    })),
+    historyMessages: (aiAssistant.historyMessages || []).map((message) => ({
+      role: message.role,
+      content: message.content || '',
+      ...(message.name ? { name: message.name } : {}),
+      ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+      ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+    })),
+    toolOutputHistory: [...(aiAssistant.toolOutputHistory || [])],
+    updatedAt: Date.now(),
+  };
+}
+
+function persistAiAssistantSession(
+  global: RequiredGlobalState,
+  tabId: number,
+  aiAssistant: ReturnType<typeof createEmptyAiAssistantState>,
+  scope?: AiAssistantSessionScope,
+): RequiredGlobalState {
+  const sessionKey = resolveAiAssistantSessionKey(global, tabId, scope);
+  if (!sessionKey) {
+    return global;
+  }
+
+  const fallbackContextLimit = global.settings.byKey.aiSettings.defaultContextLimit;
+  const hasPersistedContent = Boolean(
+    aiAssistant.turns.length
+    || (aiAssistant.historyMessages || []).length
+    || (aiAssistant.toolOutputHistory || []).length,
+  );
+  const hasCustomContextLimit = clampAiContextLimit(
+    aiAssistant.contextLimit,
+    fallbackContextLimit,
+  ) !== fallbackContextLimit;
+  const shouldPersist = hasPersistedContent || hasCustomContextLimit;
+
+  const currentByKey = global.aiAssistantSessions?.byKey || {};
+  if (!shouldPersist) {
+    if (!currentByKey[sessionKey]) {
+      return global;
+    }
+
+    const { [sessionKey]: _removed, ...rest } = currentByKey;
+    return {
+      ...global,
+      aiAssistantSessions: {
+        byKey: rest,
+      },
+    };
+  }
+
+  const nextByKey = trimAiAssistantSessions({
+    ...currentByKey,
+    [sessionKey]: buildPersistedAiAssistantState(aiAssistant, fallbackContextLimit),
+  });
+
+  return {
+    ...global,
+    aiAssistantSessions: {
+      byKey: nextByKey,
+    },
+  };
+}
+
+function buildAiAssistantStateFromSession(
+  global: GlobalState,
+  tabId: number,
+  scope?: AiAssistantSessionScope,
+) {
+  const tabState = selectTabState(global, tabId);
+  const currentAiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
+  const sessionKey = resolveAiAssistantSessionKey(global, tabId, scope);
+  const session = getAiAssistantSessionByKey(global, sessionKey);
+  const fallbackContextLimit = global.settings.byKey.aiSettings.defaultContextLimit;
+  const contextLimit = clampAiContextLimit(session?.contextLimit, fallbackContextLimit);
+
+  return {
+    ...createEmptyAiAssistantState(contextLimit),
+    isOpen: currentAiAssistant.isOpen,
+    turns: session?.turns || [],
+    historyMessages: session?.historyMessages || [],
+    toolOutputHistory: session?.toolOutputHistory || [],
+  };
+}
 
 function buildThinkingLog(aiAssistant: {
   thinkingStartedAt?: number;
@@ -130,16 +281,27 @@ function updateAiState(
   global: Parameters<typeof updateTabState>[0],
   tabId: number,
   update: Partial<ReturnType<typeof selectTabState>['aiAssistant']>,
+  options?: {
+    persistSession?: boolean;
+    scope?: AiAssistantSessionScope;
+  },
 ): RequiredGlobalState {
   const tabState = selectTabState(global, tabId);
   const aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
+  const nextAiAssistant = {
+    ...aiAssistant,
+    ...update,
+  };
 
-  return updateTabState(global, {
-    aiAssistant: {
-      ...aiAssistant,
-      ...update,
-    },
+  let nextGlobal = updateTabState(global, {
+    aiAssistant: nextAiAssistant,
   }, tabId) as RequiredGlobalState;
+
+  if (options?.persistSession) {
+    nextGlobal = persistAiAssistantSession(nextGlobal, tabId, nextAiAssistant, options.scope);
+  }
+
+  return nextGlobal;
 }
 
 function applyAiStreamEventForTab(tabId: number, event: AiStreamEvent) {
@@ -168,149 +330,33 @@ function appendAiToolOutput(
     toolOutput,
   ].slice(-12);
 
-  return updateTabState(global, {
-    aiAssistant: {
-      ...aiAssistant,
-      toolOutputs: [
-        ...aiAssistant.toolOutputs.slice(-(MAX_AI_TOOL_OUTPUTS - 1)),
-        toolOutput,
-      ],
-      toolOutputHistory,
-    },
-  }, tabId) as RequiredGlobalState;
-}
-
-function appendRetrieverPageTrace(
-  actions: any,
-  tabId: number,
-  pageIndex: number,
-  accumulatedCount: number,
-  pageResult: MessageFetchResult,
-  options?: {
-    localCount?: number;
-  },
-) {
-  const progress = formatHistoryFetchPageProgress(pageIndex, accumulatedCount, pageResult, options);
-  actions.appendAiThinkingTrace({
-    tabId,
-    trace: {
-      stage: 'retriever',
-      title: progress.title,
-      detail: progress.detail,
-    },
+  return updateAiState(global, tabId, {
+    toolOutputs: [
+      ...aiAssistant.toolOutputs.slice(-(MAX_AI_TOOL_OUTPUTS - 1)),
+      toolOutput,
+    ],
+    toolOutputHistory,
+  }, {
+    persistSession: true,
   });
 }
 
-function appendRetrieverFloodWaitTrace(
-  actions: any,
-  tabId: number,
-  seconds: number,
-) {
-  const progress = formatHistoryFetchFloodWaitProgress(seconds);
-  actions.appendAiThinkingTrace({
-    tabId,
-    trace: {
-      stage: 'retriever',
-      title: progress.title,
-      detail: progress.detail,
-    },
-  });
-}
-
-function getAiProviderDefaults(provider: 'openai' | 'gemini') {
+function getAiProviderDefaults(provider: SupportedAiProvider) {
   if (provider === 'gemini') {
     return {
       model: 'gemini-2.0-flash',
     };
   }
 
-  return {
-    model: 'gpt-4.1-mini',
-  };
-}
-
-function buildEvidenceItem(
-  global: GlobalState,
-  message: ApiMessage,
-  source: AiEvidenceSource,
-): AiEvidenceItem | undefined {
-  const lang = getTranslationFn();
-  const text = getMessageSummaryText(lang, message, undefined, true, 500).trim();
-  if (!text) {
-    return undefined;
-  }
-
-  const sender = message.isOutgoing
-    ? '我'
-    : (() => {
-      const senderPeer = selectSender(global, message);
-      return senderPeer ? (getPeerTitle(lang, senderPeer) || '未知用户') : '未知用户';
-    })();
-
-  return {
-    chatId: message.chatId,
-    threadId: MAIN_THREAD_ID,
-    messageId: message.id,
-    sender,
-    text,
-    source,
-    date: message.date,
-  };
-}
-
-function buildContextEvidence(global: ReturnType<typeof getGlobal>, tabId: number, contextLimit: number) {
-  const currentMessageList = selectCurrentMessageList(global, tabId);
-  if (!currentMessageList) {
+  if (provider === 'anthropic') {
     return {
-      chatId: undefined,
-      threadId: undefined,
-      evidence: [] as AiEvidenceItem[],
+      model: 'claude-3-5-sonnet-latest',
     };
   }
 
-  const { chatId, threadId = MAIN_THREAD_ID } = currentMessageList;
-  const messagesById = selectChatMessages(global, chatId);
-  const viewportIds = selectViewportIds(global, chatId, threadId, tabId)
-    || Object.keys(messagesById || {}).map(Number).sort((a, b) => a - b);
-  const selectedIds = pickRecentMessageIds(viewportIds, contextLimit);
-  const evidence = selectedIds
-    .map((messageId) => {
-      const message = messagesById?.[messageId];
-      return message ? buildEvidenceItem(global, message, 'recent') : undefined;
-    })
-    .filter((item): item is AiEvidenceItem => Boolean(item));
-
   return {
-    chatId,
-    threadId,
-    evidence,
+    model: 'gpt-4.1-mini',
   };
-}
-
-async function buildCachedEvidence(
-  chatId: string,
-  threadId: number | string,
-  contextLimit: number,
-): Promise<AiEvidenceItem[]> {
-  const cachedGlobal = await loadCachedGlobal();
-  const messagesById = cachedGlobal?.messages?.byChatId?.[chatId]?.byId;
-  if (!cachedGlobal || !messagesById) {
-    return [];
-  }
-
-  const threadStore = cachedGlobal.messages.byChatId[chatId]?.threadsById?.[threadId];
-  const threadIds = threadStore?.localState?.listedIds || threadStore?.localState?.lastViewportIds;
-  const ids = threadIds?.length
-    ? threadIds.map(Number)
-    : Object.keys(messagesById).map(Number).sort((a, b) => a - b);
-  const selectedIds = pickRecentMessageIds(ids, contextLimit);
-
-  return selectedIds
-    .map((messageId) => {
-      const message = messagesById[messageId];
-      return message ? buildEvidenceItem(cachedGlobal, message, 'cache') : undefined;
-    })
-    .filter((item): item is AiEvidenceItem => Boolean(item));
 }
 
 function toHistoryEvidenceItems(result: MessageFetchResult): AiEvidenceItem[] {
@@ -332,7 +378,7 @@ function isAbortError(error: unknown) {
 }
 
 async function requestAiCompletion(
-  provider: 'openai' | 'gemini',
+  provider: SupportedAiProvider,
   model: string,
   apiKey: string,
   baseUrl: string | undefined,
@@ -399,6 +445,46 @@ async function requestAiCompletion(
     const text = parseGeminiAssistantText(json);
     if (!text) {
       throw new Error('Gemini returned an empty response');
+    }
+
+    return text;
+  }
+
+  if (provider === 'anthropic') {
+    if (options?.stream) {
+      throw new Error('Anthropic streaming is not supported in this runtime');
+    }
+
+    const endpoint = getAiApiUrl(provider, baseUrl);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': apiKey,
+      },
+      signal: options?.signal,
+      body: JSON.stringify({
+        model,
+        system: options?.systemPrompt || buildAiRequestSystemPrompt(),
+        messages: [
+          { role: 'user', content: prompt },
+        ],
+        temperature: options?.temperature ?? 0.4,
+        max_tokens: 4096,
+      }),
+    });
+
+    const json = await response.json().catch(() => undefined);
+
+    if (!response.ok) {
+      const errorMessage = json?.error?.message || `Anthropic request failed (${response.status})`;
+      throw new Error(errorMessage);
+    }
+
+    const text = parseAnthropicAssistantText(json);
+    if (!text) {
+      throw new Error('Anthropic returned an empty response');
     }
 
     return text;
@@ -517,7 +603,7 @@ function createAbortSignalWithTimeout(signal: AbortSignal | undefined, timeoutMs
 }
 
 async function requestOpenAiChatCompletion(args: {
-  provider: 'openai' | 'gemini';
+  provider: SupportedAiProvider;
   model: string;
   apiKey: string;
   baseUrl: string | undefined;
@@ -537,8 +623,8 @@ async function requestOpenAiChatCompletion(args: {
     signal,
   } = args;
 
-  if (provider === 'gemini') {
-    throw new Error('Chat tool calling is not supported for Gemini in this runtime');
+  if (provider !== 'openai') {
+    throw new Error(`Chat tool calling is not supported for ${provider} in this runtime`);
   }
 
   const endpoint = getAiApiUrl(provider, baseUrl);
@@ -608,6 +694,8 @@ addActionHandler('setAiContextLimit', (global, actions, payload): ActionReturnTy
 
   return updateAiState(global, tabId, {
     contextLimit: clampAiContextLimit(contextLimit, fallback),
+  }, {
+    persistSession: true,
   });
 });
 
@@ -715,6 +803,8 @@ addActionHandler('clearAiTurns', (global, actions, payload): ActionReturnType =>
 
   return updateAiState(global, tabId, {
     ...resetAiAssistantState(selectTabState(global, tabId).aiAssistant || createEmptyAiAssistantState()),
+  }, {
+    persistSession: true,
   });
 });
 
@@ -746,7 +836,28 @@ addActionHandler('appendAiTurn', (global, actions, payload): ActionReturnType =>
         thinkingLog,
       },
     ],
+  }, {
+    persistSession: true,
   });
+});
+
+addActionHandler('hydrateAiAssistantSession', (global, actions, payload): ActionReturnType => {
+  const {
+    tabId = getCurrentTabId(),
+    chatId,
+    threadId,
+  } = payload || {};
+  const activeRun = aiRunController.getActiveRun(tabId);
+  if (activeRun) {
+    aiRunController.cancelRun(tabId);
+  }
+
+  return updateTabState(global, {
+    aiAssistant: buildAiAssistantStateFromSession(global, tabId, {
+      chatId,
+      threadId,
+    }),
+  }, tabId);
 });
 
 addActionHandler('requestAiSummaryToday', (global, actions, payload): ActionReturnType => {
@@ -805,7 +916,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
   emitEvent({ type: 'run.started' });
   actions.appendAiTurn({ role: 'user', text: trimmedPrompt, tabId });
-  emitThinking('retriever', '正在理解你的问题', '准备读取当前聊天上下文');
+  emitThinking('answer', '正在理解你的问题', '先直接回答你的问题，必要时再检索历史消息');
 
   global = getGlobal();
   const tabState = selectTabState(global, tabId);
@@ -825,32 +936,8 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     return;
   }
 
-  const {
-    chatId,
-    threadId = MAIN_THREAD_ID,
-    evidence: recentEvidence,
-  } = buildContextEvidence(global, tabId, aiAssistant.contextLimit);
-
   try {
-    emitThinking('retriever', '正在读取最近聊天记录', '先拿当前可见的消息和本地缓存');
-    emitEvent({
-      type: 'retriever.query',
-      title: '初始聊天记录收集',
-      detail: '读取当前可见消息与本地缓存',
-    });
-
-    const cachedEvidence = chatId
-      ? await buildCachedEvidence(chatId, threadId, aiAssistant.contextLimit)
-      : [];
-    if (!isRunActive()) {
-      return;
-    }
-    const localEvidence = dedupeAiEvidence([...cachedEvidence, ...recentEvidence]);
-    emitEvent({
-      type: 'retriever.result',
-      title: `已汇总 ${localEvidence.length} 条本地聊天记录`,
-      detail: '如果本地不够，将继续远程补抓历史消息',
-    });
+    const localEvidence: AiEvidenceItem[] = [];
     const contextEvidenceLines = formatAiPromptEvidenceLines(
       localEvidence.slice(-Math.min(localEvidence.length, 12)),
     );
@@ -894,6 +981,8 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       });
       global = updateAiState(global, tabId, {
         historyMessages: buildPersistentAiHistoryMessages(historyMessageSource, finalText),
+      }, {
+        persistSession: true,
       });
       setGlobal(global);
       actions.setAiActualUsedCount({ actualUsedCount, tabId });
@@ -904,12 +993,12 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     let finalAnswerText: string | undefined;
     let fallbackFinalText: string | undefined;
 
-    emitThinking('answer', '正在补充答案上下文', '必要时会继续检索历史消息');
+    emitThinking('answer', '正在生成回答', '若信息不足会按需检索历史消息');
 
     if (provider === 'openai') {
       let fetchedCount = 0;
-      let fallbackQuery;
-      let fallbackResult;
+      let fallbackQuery: Parameters<typeof buildHistoryFetchFallbackAnswer>[0] | undefined;
+      let fallbackResult: Parameters<typeof buildHistoryFetchFallbackAnswer>[1] | undefined;
 
       const loopResult = await runAiQueryLoop({
         messages: conversationMessages,
@@ -935,8 +1024,6 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             throw new DOMException('The operation was aborted.', 'AbortError');
           }
 
-          let fetchedPageIndex = 0;
-          let fetchedAccumulatedCount = 0;
           const { query, result, toolOutput, message } = await executeHistoryFetchToolCall({
             toolCall,
             userPrompt: trimmedPrompt,
@@ -948,7 +1035,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
                 type: 'retriever.query',
                 title: queryTitle,
                 detail: localEvidence.length
-                  ? `本地先命中 ${localEvidence.length} 条，开始补抓远程历史`
+                  ? `本地先命中 ${localEvidence.length} 条，开始读取本地索引历史`
                   : describeMessageFetchQuery(resolvedQuery),
               });
             },
@@ -957,27 +1044,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
               return runMessageFetchWithContinuation({
                 query: nextQuery,
-                fetchOnce: (continuationQuery) => runMessageFetch(global, continuationQuery, tabId, {
-                  onRemotePageFetched: (pageResult) => {
-                    fetchedPageIndex += 1;
-                    fetchedAccumulatedCount += pageResult.total;
-                    appendRetrieverPageTrace(actions, tabId, fetchedPageIndex, fetchedAccumulatedCount, pageResult, {
-                      localCount: localEvidence.length,
-                    });
-                    global = persistFetchedMessages({
-                      messages: pageResult.sourceMessages,
-                      chatId: selectCurrentMessageList(global, tabId)?.chatId,
-                      threadId: selectCurrentMessageList(global, tabId)?.threadId || MAIN_THREAD_ID,
-                      getGlobal,
-                      setGlobal,
-                      forceUpdateCache,
-                      addMessages,
-                    });
-                  },
-                  onRemoteFloodWait: (seconds) => {
-                    appendRetrieverFloodWaitTrace(actions, tabId, seconds);
-                  },
-                }),
+                fetchOnce: (continuationQuery) => runMessageFetch(global, continuationQuery, tabId),
                 onPageFetched: undefined,
               });
             },
@@ -1005,7 +1072,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             title: `已找到 ${fetched.length} 条相关消息`,
             detail: [
               `本地 ${localEvidence.length} 条`,
-              `远程新增 ${fetched.length} 条`,
+              `本地新增 ${fetched.length} 条`,
               `累计可用 ${localEvidence.length + fetched.length} 条`,
               result.truncated ? '结果已截断' : '结果完整',
             ].join(' · '),
@@ -1027,7 +1094,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
           return message;
         },
-        maxSteps: 6,
+        maxSteps: 20,
       }).catch((error) => {
         if (fallbackQuery && fallbackResult) {
           emitThinking('answer', '正在整理任务结果', '模型未完成回答，改用历史结果兜底输出');
@@ -1152,29 +1219,9 @@ addActionHandler('requestAiMessageFetch', async (global, actions, payload): Prom
 
   try {
     global = getGlobal();
-    let fetchedPageIndex = 0;
-    let fetchedAccumulatedCount = 0;
     const result = await runMessageFetchWithContinuation({
       query,
-      fetchOnce: (nextQuery) => runMessageFetch(global, nextQuery, tabId, {
-        onRemotePageFetched: (pageResult) => {
-          fetchedPageIndex += 1;
-          fetchedAccumulatedCount += pageResult.total;
-          appendRetrieverPageTrace(actions, tabId, fetchedPageIndex, fetchedAccumulatedCount, pageResult);
-          global = persistFetchedMessages({
-            messages: pageResult.sourceMessages,
-            chatId: selectCurrentMessageList(global, tabId)?.chatId,
-            threadId: selectCurrentMessageList(global, tabId)?.threadId || MAIN_THREAD_ID,
-            getGlobal,
-            setGlobal,
-            forceUpdateCache,
-            addMessages,
-          });
-        },
-        onRemoteFloodWait: (seconds) => {
-          appendRetrieverFloodWaitTrace(actions, tabId, seconds);
-        },
-      }),
+      fetchOnce: (nextQuery) => runMessageFetch(global, nextQuery, tabId),
       onPageFetched: undefined,
     });
 
@@ -1201,7 +1248,7 @@ addActionHandler('requestAiMessageFetch', async (global, actions, payload): Prom
       trace: {
         stage: 'summary',
         title: `已获取 ${result.total} 条消息`,
-        detail: [`远程新增 ${result.total} 条`, '已写入本地缓存', result.truncated ? '结果已截断' : '结果完整'].join(' · '),
+        detail: [`本地新增 ${result.total} 条`, '已写入本地缓存', result.truncated ? '结果已截断' : '结果完整'].join(' · '),
       },
       tabId,
     });

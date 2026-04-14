@@ -102,10 +102,142 @@ import type { SearchResultKey } from '../../util/keys/searchResultKey';
 import type { RegularLangFnParameters } from '../../util/localization';
 import type { ProfileCollectionKey } from '../selectors/payments';
 import type { CallbackAction } from './actions';
+import type { AiStreamStage } from './aiStream';
 
 export type PollVote = {
   peerId: string;
   date: number;
+};
+
+export type TimeRange = {
+  mode: 'preset';
+  value: 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth';
+} | {
+  mode: 'custom';
+  startAt: number;
+  endAt: number;
+};
+
+export type PersonRef = {
+  peerId: string;
+  title?: string;
+};
+
+export type MessageFetchQuery = (
+  | {
+    mode: 'recent';
+    limit?: number;
+  }
+  | {
+    mode: 'person';
+    person: PersonRef;
+    limit?: number;
+  }
+  | {
+    mode: 'keyword';
+    keyword: string;
+    person?: PersonRef;
+    limit?: number;
+  }
+  | {
+    mode: 'range';
+    timeRange: TimeRange;
+    limit?: number;
+  }
+) & {
+  beforeMessageId?: number;
+  timeRange?: TimeRange;
+  remoteOnly?: boolean;
+};
+
+export type MessageFetchMessage = {
+  chatId: string;
+  threadId: ThreadId;
+  messageId: number;
+  sender: string;
+  date: number;
+  text: string;
+};
+
+export type MessageFetchResult = {
+  messages: MessageFetchMessage[];
+  total: number;
+  truncated: boolean;
+  evidenceIds?: number[];
+  sourceMessages?: ApiMessage[];
+  nextBeforeMessageId?: number;
+  summary?: string;
+};
+
+export type AiAssistantToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type ToolOutput = {
+  type: 'message.fetch';
+  query: MessageFetchQuery;
+  result: MessageFetchResult;
+  createdAt: number;
+} | {
+  type: Exclude<string, 'message.fetch'>;
+  description?: string;
+  payload?: unknown;
+  createdAt: number;
+};
+
+export type AiAssistantStreamStatus = 'idle' | 'streaming' | 'cancelling' | 'done' | 'cancelled' | 'error';
+
+export type AiAssistantTurn = {
+  role: 'user' | 'assistant';
+  text: string;
+  createdAt: number;
+  thinkingLog?: {
+    startedAt: number;
+    endedAt?: number;
+    steps: {
+      stage: AiStreamStage;
+      title: string;
+      detail?: string;
+      createdAt: number;
+    }[];
+  };
+};
+
+export type AiAssistantState = {
+  isOpen: boolean;
+  contextLimit: number;
+  turns: AiAssistantTurn[];
+  historyMessages: {
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string;
+    name?: string;
+    tool_call_id?: string;
+    tool_calls?: AiAssistantToolCall[];
+  }[];
+  toolOutputs: ToolOutput[];
+  toolOutputHistory: ToolOutput[];
+  streamStatus: AiAssistantStreamStatus;
+  runId?: string;
+  activeStage?: AiStreamStage;
+  thinkingTrace: {
+    stage: AiStreamStage;
+    title: string;
+    detail?: string;
+    createdAt: number;
+  }[];
+  thinkingStartedAt?: number;
+  thinkingEndedAt?: number;
+  thinkingStage?: string;
+  draftText?: string;
+  finalText?: string;
+  actualUsedCount?: number;
+  isLoading?: boolean;
+  error?: string;
 };
 
 export type TabState = {
@@ -142,6 +274,7 @@ export type TabState = {
     forceScrollProfileTab?: boolean;
     isOwnProfile?: boolean;
   };
+  aiAssistant: AiAssistantState;
   nextFoldersAction?: ReducerAction<FoldersActions>;
   shareFolderScreen?: {
     folderId: number;
