@@ -1,6 +1,6 @@
 ---
 name: history-fetch
-description: Fetch Telegram chat history by person, time range, or recent N messages.
+description: Fetch local synced Telegram chat history by person, keyword, or time range.
 user-invocable: false
 ---
 
@@ -9,8 +9,10 @@ user-invocable: false
 Use this skill when the assistant needs chat history to complete a Telegram task.
 
 ## Purpose
-- Fetch messages from the current chat and thread.
-- Support `person`, `keyword`, `range`, and `recent` retrieval modes.
+- Fetch messages from locally synced data of the current chat and thread.
+- Support `person`, `keyword`, and `range` retrieval modes.
+- Filters are combinable: `keyword` + `person` + `timeRange` can be used together.
+- `keyword` is fuzzy and can match both sender names and message text.
 - Return structured evidence for downstream reasoning.
 
 ## When to Use
@@ -20,8 +22,7 @@ Use this skill when the assistant needs chat history to complete a Telegram task
 - The current context is insufficient to complete the task.
 
 ## Inputs
-- `mode`: `person` | `range` | `recent`
-- `mode`: `person` | `keyword` | `range` | `recent`
+- `mode`: `person` | `keyword` | `range`
 - `person`: optional
 - `keyword`: optional
 - `timeRange`: optional
@@ -37,6 +38,7 @@ Use this skill when the assistant needs chat history to complete a Telegram task
 
 ## Rules
 - Read only.
+- Local only: do not trigger remote history fetching.
 - Do not guess missing facts.
 - Do not turn fetch results into a final answer.
 - After fetching, reassess the task and decide the next action.
