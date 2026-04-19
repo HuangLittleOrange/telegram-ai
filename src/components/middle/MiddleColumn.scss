@@ -166,6 +166,8 @@
     max-width: var(--messages-container-width);
     padding: 0 1rem;
 
+    background: transparent;
+
     transition: top 200ms, transform var(--layer-transition);
 
     &::before {

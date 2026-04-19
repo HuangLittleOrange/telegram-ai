@@ -46,11 +46,12 @@ function resolveMessageSenderLabel(global: GlobalState, message: ApiMessage) {
 }
 
 function formatDayLabel(dayStartSec: number) {
-  return new Date(dayStartSec * 1000).toLocaleDateString(undefined, {
-    month: 'numeric',
-    day: 'numeric',
-    weekday: 'short',
-  });
+  const day = new Date(dayStartSec * 1000);
+  const year = day.getFullYear();
+  const month = String(day.getMonth() + 1).padStart(2, '0');
+  const date = String(day.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${date}`;
 }
 
 function resolveDayInfo(dateSec: number) {
@@ -89,12 +90,15 @@ export async function loadSyncedHistoryDays(args: {
 }) {
   const days = await listSyncedMessageDays(args);
 
-  return days.map((day) => ({
-    dayKey: day.dayKey,
-    dayStartSec: day.dayStartSec,
-    count: day.count,
-    label: formatDayLabel(day.dayStartSec),
-  }));
+  return days
+    .slice()
+    .sort((left, right) => right.dayStartSec - left.dayStartSec)
+    .map((day) => ({
+      dayKey: day.dayKey,
+      dayStartSec: day.dayStartSec,
+      count: day.count,
+      label: formatDayLabel(day.dayStartSec),
+    }));
 }
 
 export async function loadSyncedHistoryMessages(args: {
@@ -143,6 +147,26 @@ export async function loadSyncedHistorySearchMessages(args: {
     return [];
   }
 
+  const mapAndSort = (records: Awaited<ReturnType<typeof getSyncedMessagesByIds>>) => records
+    .map(({ message, messageId, date }) => mapSyncedHistoryMessageItem(global, messageId, date, message))
+    .sort((left, right) => (
+      right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
+    ));
+
+  const filterByKeyword = (items: SyncedHistoryMessageItem[]) => {
+    const lowerKeyword = normalizedKeyword.toLowerCase();
+
+    return items.filter((message) => (
+      message.text.toLowerCase().includes(lowerKeyword)
+      || message.sender.toLowerCase().includes(lowerKeyword)
+      || message.dayKey.toLowerCase().includes(lowerKeyword)
+      || message.dayLabel.toLowerCase().includes(lowerKeyword)
+      || message.timeText.toLowerCase().includes(lowerKeyword)
+    ));
+  };
+
+  const fallbackScanLimit = Math.min(5000, Math.max(800, maxCount * 8));
+
   const messageIds = await searchMessageIdsByKeywordFts({
     chatId,
     keyword: normalizedKeyword,
@@ -154,34 +178,42 @@ export async function loadSyncedHistorySearchMessages(args: {
 
   if (messageIds?.length) {
     const records = await getSyncedMessagesByIds(chatId, messageIds);
+    const mappedFromFts = mapAndSort(records);
+    const shouldFallback = records.length < Math.min(messageIds.length, maxCount);
 
-    return records
-      .map(({ message, messageId, date }) => mapSyncedHistoryMessageItem(global, messageId, date, message))
+    if (!shouldFallback) {
+      return mappedFromFts.slice(0, maxCount);
+    }
+
+    const fallbackRecords = await querySyncedMessages({
+      chatId,
+      threadId,
+      timeRange,
+      maxCount: fallbackScanLimit,
+    });
+    const fallbackMapped = filterByKeyword(mapAndSort(fallbackRecords));
+
+    if (!mappedFromFts.length) {
+      return fallbackMapped.slice(0, maxCount);
+    }
+
+    const mergedById = new Map<number, SyncedHistoryMessageItem>();
+    mappedFromFts.forEach((item) => mergedById.set(item.messageId, item));
+    fallbackMapped.forEach((item) => mergedById.set(item.messageId, item));
+
+    return Array.from(mergedById.values())
       .sort((left, right) => (
         right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
-      ));
+      ))
+      .slice(0, maxCount);
   }
 
   const records = await querySyncedMessages({
     chatId,
     threadId,
     timeRange,
-    maxCount: 5000,
+    maxCount: fallbackScanLimit,
   });
 
-  const lowerKeyword = normalizedKeyword.toLowerCase();
-
-  return records
-    .map(({ message, messageId, date }) => mapSyncedHistoryMessageItem(global, messageId, date, message))
-    .filter((message) => (
-      message.text.toLowerCase().includes(lowerKeyword)
-      || message.sender.toLowerCase().includes(lowerKeyword)
-      || message.dayKey.toLowerCase().includes(lowerKeyword)
-      || message.dayLabel.toLowerCase().includes(lowerKeyword)
-      || message.timeText.toLowerCase().includes(lowerKeyword)
-    ))
-    .sort((left, right) => (
-      right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
-    ))
-    .slice(0, maxCount);
+  return filterByKeyword(mapAndSort(records)).slice(0, maxCount);
 }

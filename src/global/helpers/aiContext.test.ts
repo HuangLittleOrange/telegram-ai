@@ -33,6 +33,25 @@ describe('ai context helper', () => {
     expect(prompt.indexOf('## Telegram Context')).toBeGreaterThan(prompt.indexOf('## Time Context'));
   });
 
+  it('includes local sync coverage in request prompt when chat sync state is available', () => {
+    const prompt = aiContext.buildAiRequestSystemPrompt({
+      now: new Date('2026-04-16T15:41:00+08:00').getTime(),
+      timeZone: 'Asia/Shanghai',
+      syncCoverage: {
+        chatId: '-1001234567890',
+        oldestSyncedDate: new Date('2025-08-05T00:00:00+08:00').getTime(),
+        newestSyncedDate: new Date('2026-04-16T00:00:00+08:00').getTime(),
+        syncedMessages: 65015,
+        totalMessages: 332121,
+      },
+    });
+
+    expect(prompt).toContain('## Local Sync Coverage');
+    expect(prompt).toContain('当前聊天：-1001234567890');
+    expect(prompt).toContain('本地已同步时间范围：2025-08-05 至 2026-04-16');
+    expect(prompt).toContain('本地已同步消息数：65015 / 332121');
+  });
+
   it('builds the final-answer system prompt with time context and no execution helpers', () => {
     const prompt = aiContext.buildAiFinalAnswerSystemPrompt({
       now: new Date('2026-04-09T11:38:00+08:00').getTime(),

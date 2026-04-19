@@ -321,7 +321,8 @@ export const INITIAL_GLOBAL_STATE: GlobalState = {
       doNotTranslate: [],
       aiSettings: {
         provider: 'openai',
-        model: 'gpt-4.1-mini',
+        model: 'gemma4:e4b',
+        baseUrl: 'http://127.0.0.1:11434/v1',
         defaultContextLimit: 100,
       },
     },

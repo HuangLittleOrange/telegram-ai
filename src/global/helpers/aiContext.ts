@@ -3,6 +3,18 @@ type AiPromptTimeContext = {
   timeZone?: string;
 };
 
+type AiPromptSyncCoverageContext = {
+  chatId?: string;
+  oldestSyncedDate?: number;
+  newestSyncedDate?: number;
+  syncedMessages?: number;
+  totalMessages?: number;
+};
+
+type AiRequestPromptContext = AiPromptTimeContext & {
+  syncCoverage?: AiPromptSyncCoverageContext;
+};
+
 function joinPromptBlocks(...blocks: Array<string | Array<string | undefined> | undefined>) {
   return blocks
     .flatMap((block) => {
@@ -45,6 +57,48 @@ function buildAiTimeContextBlock({ now = Date.now(), timeZone }: AiPromptTimeCon
   ];
 }
 
+function formatPromptDateOnly(timestamp: number, timeZone?: string) {
+  const formatter = new Intl.DateTimeFormat('sv-SE', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  return formatter.format(new Date(timestamp));
+}
+
+function buildAiLocalSyncCoverageBlock(context?: AiRequestPromptContext) {
+  const resolvedTimeZone = context?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const syncCoverage = context?.syncCoverage;
+  if (!syncCoverage?.chatId) {
+    return undefined;
+  }
+
+  const {
+    oldestSyncedDate,
+    newestSyncedDate,
+    syncedMessages,
+    totalMessages,
+  } = syncCoverage;
+
+  const rangeStart = oldestSyncedDate
+    ? formatPromptDateOnly(oldestSyncedDate, resolvedTimeZone)
+    : '未知';
+  const rangeEndSource = newestSyncedDate || oldestSyncedDate;
+  const rangeEnd = rangeEndSource
+    ? formatPromptDateOnly(rangeEndSource, resolvedTimeZone)
+    : '未知';
+
+  return [
+    '## Local Sync Coverage',
+    `当前聊天：${syncCoverage.chatId}`,
+    `本地已同步时间范围：${rangeStart} 至 ${rangeEnd}`,
+    `本地已同步消息数：${syncedMessages || 0}${totalMessages ? ` / ${totalMessages}` : ''}`,
+    '如果用户问题超出该时间范围，先明确说明“该范围本地同步消息不足”。',
+  ];
+}
+
 export function getAiPromptTimeContext(): AiPromptTimeContext {
   return {
     now: Date.now(),
@@ -76,7 +130,9 @@ export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
       '- 时间精准换算：遇到模糊时间（如“上周”、“昨天”、“本月”），必须基于当前时间精准换算为具体的 `fromDate` 和 `toDate`（格式 YYYY-MM-DD）；其中“周”按自然周（周一到周日）计算。',
       '- 不要传 `preset`；只使用结构化参数 `fromDate` 和 `toDate`。',
       '- 优先结构化：参数首选 `toolArgs`。寻找特定名词/称呼时，必须在 `toolQueryHints` 中提供结构化的 `keyword` 作为补充线索。禁止基于字面词进行主观路由判断。',
-      '- 缺省处理：若检索结果极少、只拿到很少几条消息（本地未同步），优先向用户说明“该时间范围内本地同步消息不足”，禁止凭空捏造总结。',
+      '- 迭代检索：如果一次检索命中太少且信息不足，应主动再次调用工具，优先扩大 `timeRange`（例如当天 -> 多天 -> 更长时间）。',
+      '- 若工具结果中的 `messageCount < 5`，必须再扩大 `timeRange` 至少一轮后才可收尾。',
+      '- 缺省处理：若多次扩大范围后依然结果极少、只拿到很少几条消息（本地未同步），优先向用户说明“该时间范围内本地同步消息不足”，禁止凭空捏造总结。',
     ],
     [
       '## Output Style (输出风格)',
@@ -94,13 +150,15 @@ export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
   );
 }
 
-export function buildAiRequestSystemPrompt(timeContext?: AiPromptTimeContext) {
-  return [
-    buildAiSystemPrompt(timeContext),
-    '',
-    '## Telegram Context',
-    '当前任务是围绕 Telegram 聊天记录完成总结、回复、待办或检索，不是泛泛闲聊。',
-  ].join('\n');
+export function buildAiRequestSystemPrompt(context?: AiRequestPromptContext) {
+  return joinPromptBlocks(
+    buildAiSystemPrompt(context),
+    buildAiLocalSyncCoverageBlock(context),
+    [
+      '## Telegram Context',
+      '当前任务是围绕 Telegram 聊天记录完成总结、回复、待办或检索，不是泛泛闲聊。',
+    ],
+  );
 }
 
 export function buildAiFinalAnswerSystemPrompt(timeContext?: AiPromptTimeContext) {

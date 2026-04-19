@@ -20,6 +20,7 @@ import {
   resolveTimeRangeBoundsSec,
 } from '../../helpers/chatSync';
 import {
+  clearSyncedMessagesForChat,
   getSyncedMessagesStats,
   persistSyncedMessagesForChat,
 } from '../../helpers/syncedMessagesStore';
@@ -98,6 +99,26 @@ function getNextCursorMessageId(messages?: ApiMessage[]) {
   }
 
   return Math.min(...ids);
+}
+
+function toBackwardCursorMessageId(messageId?: number) {
+  if (!Number.isFinite(messageId) || !messageId || messageId <= 0) {
+    return undefined;
+  }
+
+  return messageId > 1 ? messageId - 1 : messageId;
+}
+
+function pickNewerCursorMessageId(currentCursor?: number, candidateCursor?: number) {
+  if (!Number.isFinite(candidateCursor) || !candidateCursor || candidateCursor <= 0) {
+    return currentCursor;
+  }
+
+  if (!Number.isFinite(currentCursor) || !currentCursor || currentCursor <= 0) {
+    return candidateCursor;
+  }
+
+  return candidateCursor > currentCursor ? candidateCursor : currentCursor;
 }
 
 function normalizeTakeoutRanges(ranges?: TakeoutMessageRange[]) {
@@ -851,6 +872,64 @@ addActionHandler('resetChatSync', (global, _actions, payload): ActionReturnType 
   return nextGlobal;
 });
 
+addActionHandler('clearChatSyncedMessages', async (_global, _actions, payload): Promise<void> => {
+  const resolvedThreadId = resolveSyncThreadId(payload.threadId);
+  runningSyncKeys.delete(getSyncKey(payload.chatId, resolvedThreadId));
+  void callApi('abortChatRequests', {
+    chatId: payload.chatId,
+    threadId: resolvedThreadId,
+  });
+
+  applyChatSyncStatePatch(payload.chatId, {
+    status: 'clearing',
+    hasSyncedOnce: false,
+    lastProgressAt: undefined,
+    cursorMessageId: undefined,
+    error: undefined,
+    errorCode: undefined,
+    errorDetail: undefined,
+    takeoutId: undefined,
+    requiresTakeoutAuthorization: undefined,
+    takeoutInitDelaySeconds: undefined,
+    updatedAt: Date.now(),
+  });
+
+  try {
+    await clearSyncedMessagesForChat({
+      chatId: payload.chatId,
+      threadId: resolvedThreadId,
+    });
+    await loadChatSyncStatsInternal(payload.chatId, resolvedThreadId);
+    applyChatSyncStatePatch(payload.chatId, {
+      status: 'idle',
+      hasSyncedOnce: false,
+      lastProgressAt: undefined,
+      cursorMessageId: undefined,
+      error: undefined,
+      errorCode: undefined,
+      errorDetail: undefined,
+      takeoutId: undefined,
+      requiresTakeoutAuthorization: undefined,
+      takeoutInitDelaySeconds: undefined,
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    await loadChatSyncStatsInternal(payload.chatId, resolvedThreadId).catch(() => undefined);
+    const global = getGlobal();
+    const currentState = getChatSyncState(global, payload.chatId);
+    const parsedError = parseSyncError(error, currentState.selectedMethod);
+    applyChatSyncStatePatch(payload.chatId, {
+      status: 'error',
+      error: parsedError.message,
+      errorCode: parsedError.errorCode,
+      errorDetail: parsedError.errorDetail,
+      requiresTakeoutAuthorization: parsedError.requiresTakeoutAuthorization,
+      takeoutInitDelaySeconds: parsedError.takeoutInitDelaySeconds,
+      updatedAt: Date.now(),
+    });
+  }
+});
+
 addActionHandler('startChatSync', async (_global, _actions, payload): Promise<void> => {
   const resolvedThreadId = resolveSyncThreadId(payload.threadId);
   const key = getSyncKey(payload.chatId, resolvedThreadId);
@@ -921,9 +1000,114 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
       global = getGlobal();
     }
 
+    const fetchSyncPageWithRecovery = async ({
+      offsetId,
+      range,
+    }: {
+      offsetId?: number;
+      range?: TakeoutMessageRange;
+    }) => {
+      while (true) {
+        const pageRequest = syncMethod === 'dataExport' && takeoutId
+          ? callApi('fetchMessagesWithTakeout', {
+            chat,
+            takeoutId,
+            range,
+            threadId: resolvedThreadId,
+            offsetId,
+            addOffset: 0,
+            limit: CHAT_SYNC_BATCH_SIZE,
+            isSavedDialog,
+          })
+          : callApi('fetchMessages', {
+            chat,
+            threadId: resolvedThreadId,
+            offsetId,
+            addOffset: 0,
+            limit: CHAT_SYNC_BATCH_SIZE,
+            isSavedDialog,
+          });
+
+        try {
+          return await withSyncTimeout(
+            pageRequest as Promise<SyncFetchedPage | undefined>,
+            SYNC_PAGE_TIMEOUT_MS,
+            'SYNC_REQUEST_TIMEOUT',
+          );
+        } catch (error) {
+          const shouldRecoverTakeout = (
+            syncMethod === 'dataExport'
+            && takeoutSessionStarted
+            && takeoutRecoveryAttempts < MAX_TAKEOUT_RECOVERY_ATTEMPTS
+            && isRecoverableDataExportError(error)
+          );
+
+          if (!shouldRecoverTakeout) {
+            throw error;
+          }
+
+          const recoveredTakeoutSession = await callApi('initTakeoutSessionForSync');
+          const recoveredTakeoutId = recoveredTakeoutSession?.takeoutId;
+
+          if (!recoveredTakeoutId) {
+            throw error;
+          }
+
+          takeoutId = recoveredTakeoutId;
+          takeoutRecoveryAttempts += 1;
+          global = applyChatSyncStatePatch(payload.chatId, {
+            takeoutId,
+            error: undefined,
+            errorCode: undefined,
+            errorDetail: undefined,
+            requiresTakeoutAuthorization: undefined,
+            takeoutInitDelaySeconds: undefined,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    };
+
+    let topupBackfillCursorMessageId: number | undefined;
+    if (!bounds) {
+      // Always top up latest messages first so "today" is refreshed before historical backfill.
+      const latestPage = await fetchSyncPageWithRecovery({ offsetId: undefined });
+      if (latestPage?.messages?.length) {
+        takeoutRecoveryAttempts = 0;
+        topupBackfillCursorMessageId = toBackwardCursorMessageId(getNextCursorMessageId(latestPage.messages));
+        global = applyGlobalMutation((currentGlobal) => {
+          const mergedGlobal = mergeFetchedPage(currentGlobal, latestPage);
+          return updateChatSyncState(mergedGlobal, payload.chatId, {
+            lastProgressAt: Date.now(),
+          });
+        });
+        forceUpdateCache();
+        await persistSyncedMessagesForChat(global, payload.chatId, latestPage.messages);
+        await refreshPersistedSyncState({
+          chatId: payload.chatId,
+          threadId: resolvedThreadId,
+          selectedTimeRange,
+        });
+        global = getGlobal();
+        syncState = getChatSyncState(global, payload.chatId);
+      }
+    }
+
     let cursorMessageId = syncState.cursorMessageId;
     if (bounds) {
       cursorMessageId = undefined;
+    } else {
+      // Prefer a newer cursor when available to avoid skipping unsynced middle ranges.
+      // Example: if existing cursor already dropped to Sep while latest top-up ends at Apr,
+      // resume from Apr and continue backward to fill the hole first.
+      const shouldPreferNewestCursor = (
+        syncState.status !== 'completed'
+        || !syncState.hasSyncedOnce
+        || Boolean(syncState.unsyncedMessages)
+      );
+      if (shouldPreferNewestCursor) {
+        cursorMessageId = pickNewerCursorMessageId(cursorMessageId, topupBackfillCursorMessageId);
+      }
     }
     if (!cursorMessageId) {
       if (!bounds && syncState.oldestSyncedDate) {
@@ -936,6 +1120,9 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
     }
     if (!cursorMessageId) {
       cursorMessageId = await resolveInitialCursor(chat, selectedTimeRange);
+    }
+    if (!cursorMessageId && !bounds) {
+      cursorMessageId = topupBackfillCursorMessageId;
     }
     if (takeoutRanges.length) {
       activeTakeoutRangeIndex = resolveTakeoutRangeIndex(takeoutRanges, cursorMessageId);
@@ -953,64 +1140,10 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
       }
 
       const currentTakeoutRange = takeoutRanges.length ? takeoutRanges[activeTakeoutRangeIndex] : undefined;
-      const pageRequest = syncMethod === 'dataExport' && takeoutId
-        ? callApi('fetchMessagesWithTakeout', {
-          chat,
-          takeoutId,
-          range: currentTakeoutRange,
-          threadId: resolvedThreadId,
-          offsetId: cursorMessageId,
-          addOffset: 0,
-          limit: CHAT_SYNC_BATCH_SIZE,
-          isSavedDialog,
-        })
-        : callApi('fetchMessages', {
-          chat,
-          threadId: resolvedThreadId,
-          offsetId: cursorMessageId,
-          addOffset: 0,
-          limit: CHAT_SYNC_BATCH_SIZE,
-          isSavedDialog,
-        });
-      let page: SyncFetchedPage | undefined;
-      try {
-        page = await withSyncTimeout(
-          pageRequest as Promise<SyncFetchedPage | undefined>,
-          SYNC_PAGE_TIMEOUT_MS,
-          'SYNC_REQUEST_TIMEOUT',
-        );
-      } catch (error) {
-        const shouldRecoverTakeout = (
-          syncMethod === 'dataExport'
-          && takeoutSessionStarted
-          && takeoutRecoveryAttempts < MAX_TAKEOUT_RECOVERY_ATTEMPTS
-          && isRecoverableDataExportError(error)
-        );
-
-        if (!shouldRecoverTakeout) {
-          throw error;
-        }
-
-        const recoveredTakeoutSession = await callApi('initTakeoutSessionForSync');
-        const recoveredTakeoutId = recoveredTakeoutSession?.takeoutId;
-
-        if (!recoveredTakeoutId) {
-          throw error;
-        }
-
-        takeoutId = recoveredTakeoutId;
-        takeoutRecoveryAttempts += 1;
-        global = applyChatSyncStatePatch(payload.chatId, {
-          takeoutId,
-          error: undefined,
-          errorCode: undefined,
-          errorDetail: undefined,
-          requiresTakeoutAuthorization: undefined,
-          takeoutInitDelaySeconds: undefined,
-          updatedAt: Date.now(),
-        });
-        continue;
-      }
+      const page = await fetchSyncPageWithRecovery({
+        offsetId: cursorMessageId,
+        range: currentTakeoutRange,
+      });
 
       if (!page?.messages?.length) {
         if (takeoutRanges.length && activeTakeoutRangeIndex < takeoutRanges.length - 1) {
@@ -1037,7 +1170,10 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
       if (nextCursorMessageId !== undefined) {
         // Ensure the next page strictly moves backward to older messages.
         const previousCursorMessageId = cursorMessageId;
-        const nextCursor = nextCursorMessageId > 1 ? nextCursorMessageId - 1 : nextCursorMessageId;
+        const nextCursor = toBackwardCursorMessageId(nextCursorMessageId);
+        if (nextCursor === undefined) {
+          throw new Error('SYNC_CURSOR_STALLED');
+        }
         const didAdvance = previousCursorMessageId === undefined || nextCursor < previousCursorMessageId;
 
         if (didAdvance) {

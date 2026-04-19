@@ -87,6 +87,7 @@ const ChatSyncPanel = ({
 
   const isRangeScopedSync = syncState.selectedTimeRange?.mode === 'custom';
   const hasReliableScopedTotal = syncState.scopedTotalMessages !== undefined;
+  const isSyncBusy = syncState.status === 'syncing' || syncState.status === 'clearing';
 
   const progress = useMemo(() => {
     const progressBaseTotal = isRangeScopedSync ? syncState.scopedTotalMessages : syncState.totalMessages;
@@ -103,6 +104,8 @@ const ChatSyncPanel = ({
         return '同步中';
       case 'paused':
         return '已暂停';
+      case 'clearing':
+        return '清空中';
       case 'completed':
         return '已完成';
       case 'error':
@@ -137,7 +140,7 @@ const ChatSyncPanel = ({
             name={`chat-sync-method-${chatId}`}
             checked={syncState.selectedMethod === 'dataExport'}
             onChange={() => setChatSyncMethod({ chatId, method: 'dataExport' })}
-            disabled={syncState.status === 'syncing'}
+            disabled={isSyncBusy}
           />
           Data Export（推荐）
         </label>
@@ -147,7 +150,7 @@ const ChatSyncPanel = ({
             name={`chat-sync-method-${chatId}`}
             checked={syncState.selectedMethod === 'getHistory'}
             onChange={() => setChatSyncMethod({ chatId, method: 'getHistory' })}
-            disabled={syncState.status === 'syncing'}
+            disabled={isSyncBusy}
           />
           GetHistory（有风险）
         </label>
@@ -221,9 +224,14 @@ const ChatSyncPanel = ({
               className="primary-action"
               size="tiny"
               color="primary"
+              disabled={syncState.status === 'clearing'}
               onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
             >
-              {syncState.status === 'paused' ? '继续同步' : '开始同步'}
+              {syncState.status === 'paused'
+                ? '继续同步'
+                : syncState.status === 'clearing'
+                  ? '清空中...'
+                  : '开始同步'}
             </Button>
           )}
         </div>
@@ -235,7 +243,7 @@ const ChatSyncPanel = ({
             resetChatSync({ chatId, threadId: resolvedThreadId });
             startChatSync({ chatId, threadId: resolvedThreadId });
           }}
-          disabled={syncState.status === 'syncing'}
+          disabled={isSyncBusy}
         >
           重新同步
         </Button>

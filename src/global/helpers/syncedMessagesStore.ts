@@ -3,10 +3,16 @@ import type { ThreadId } from '../../types';
 import type { GlobalState } from '../types';
 import { MAIN_THREAD_ID } from '../../api/types';
 
+import { getTranslationFn } from '../../util/localization';
 import { pause } from '../../util/schedulers';
 import { selectSender } from '../selectors/messages';
 import { selectThreadIdFromMessage } from '../selectors/threads';
-import { type FtsIndexRecord, upsertMessagesInFts } from './sqliteFtsStore';
+import { getPeerTitle } from './peers';
+import {
+  type FtsIndexRecord,
+  removeMessagesByChatFromFts,
+  upsertMessagesInFts,
+} from './sqliteFtsStore';
 
 type NormalizedTimeRange = {
   startSec: number;
@@ -93,6 +99,26 @@ function resolveStoredSenderId(global: GlobalState, message: ApiMessage) {
 
   const sender = selectSender(global, message);
   return sender?.id ? String(sender.id) : undefined;
+}
+
+function resolveStoredSenderSearchText(global: GlobalState, message: ApiMessage) {
+  const sender = selectSender(global, message);
+  const senderId = resolveStoredSenderId(global, message);
+  const senderTitle = sender ? getPeerTitle(getTranslationFn(), sender) : undefined;
+  const usernames = sender?.usernames
+    ?.map((item) => item.username?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  const chunks = [
+    senderId,
+    senderTitle,
+    ...(usernames || []),
+    ...(usernames || []).map((username) => `@${username}`),
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  return chunks.join(' ');
 }
 
 function extractRecordText(message: ApiMessage) {
@@ -239,6 +265,7 @@ function getLocalDaySummary(dateSec: number) {
 
 function toFtsRecord(global: GlobalState, record: SyncedMessageRecord): FtsIndexRecord {
   const text = extractRecordText(record.message);
+  const senderSearchText = resolveStoredSenderSearchText(global, record.message);
 
   return {
     chatId: record.chatId,
@@ -246,7 +273,7 @@ function toFtsRecord(global: GlobalState, record: SyncedMessageRecord): FtsIndex
     threadId: record.threadId,
     date: record.date,
     senderId: record.senderId,
-    sender: record.senderId,
+    sender: senderSearchText || record.senderId,
     text,
   };
 }
@@ -508,7 +535,9 @@ export async function listSyncedMessageDays(args: QuerySyncedMessagesArgs): Prom
 
   await transactionToPromise(transaction);
 
-  return days;
+  return days
+    .slice()
+    .sort((left, right) => right.dayStartSec - left.dayStartSec);
 }
 
 export async function clearSyncedMessagesStore() {
@@ -521,6 +550,66 @@ export async function clearSyncedMessagesStore() {
   transaction.objectStore(STORE_NAME).clear();
   transaction.objectStore(META_STORE_NAME).clear();
   await transactionToPromise(transaction);
+}
+
+export async function clearSyncedMessagesForChat(args: {
+  chatId: string;
+  threadId?: ThreadId;
+}) {
+  if (!getIdbFactory()) {
+    return;
+  }
+
+  const database = await getSyncedMessagesDatabase();
+  const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORE_NAME);
+  const { indexName, keyRange } = buildQueryRange({
+    chatId: args.chatId,
+    threadId: args.threadId,
+  });
+  const index = store.index(indexName);
+  let deletedCount = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    const request = index.openCursor(keyRange, 'next');
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+
+      cursor.delete();
+      deletedCount += 1;
+      cursor.continue();
+    };
+
+    request.onerror = () => reject(request.error || new Error('IndexedDB cursor failed'));
+    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed'));
+    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+  });
+
+  await transactionToPromise(transaction);
+
+  let ftsCleared = true;
+  try {
+    await removeMessagesByChatFromFts({
+      chatId: args.chatId,
+      threadId: args.threadId,
+    });
+  } catch (error) {
+    ftsCleared = false;
+    // Keep primary IndexedDB clear successful even when FTS cleanup fails.
+    // Search layer will fall back to non-FTS path when needed.
+    // eslint-disable-next-line no-console
+    console.error('[syncedMessagesStore] Failed to clear FTS records for chat', args.chatId, error);
+  }
+
+  return {
+    deletedCount,
+    ftsCleared,
+  };
 }
 
 export async function getSyncedMessageById(chatId: string, messageId: number) {

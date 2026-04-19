@@ -26,9 +26,15 @@ type FtsSearchArgs = {
   limit: number;
 };
 
+type FtsDeleteArgs = {
+  chatId: string;
+  threadId?: number | string;
+};
+
 type FtsEngine = {
   upsert: (records: FtsIndexRecord[]) => Promise<void>;
   search: (args: FtsSearchArgs) => Promise<number[]>;
+  removeByChat: (args: FtsDeleteArgs) => Promise<void>;
 };
 
 const WEB_FTS_DB_BINARY_KEY = 'history_fts_sqlite_binary_v1';
@@ -97,6 +103,21 @@ function toPositiveLimit(limit: number) {
 
 function shouldFilterByThreadId(threadId: number | string | undefined) {
   return threadId !== undefined && threadId !== MAIN_THREAD_ID;
+}
+
+function buildDeleteByChatStatement(args: FtsDeleteArgs) {
+  const whereChunks = ['chat_id = ?'];
+  const params: unknown[] = [args.chatId];
+
+  if (shouldFilterByThreadId(args.threadId)) {
+    whereChunks.push('thread_id = ?');
+    params.push(String(args.threadId));
+  }
+
+  return {
+    sql: `DELETE FROM history_fts WHERE ${whereChunks.join(' AND ')};`,
+    params,
+  };
 }
 
 function normalizeMessageIds(rows: Record<string, unknown>[]) {
@@ -237,6 +258,12 @@ LIMIT ?;
 
         return Promise.resolve(normalizeMessageIds(rows));
       },
+      removeByChat: (args) => {
+        const statement = buildDeleteByChatStatement(args);
+        db.run(statement.sql, statement.params);
+        scheduleWebDbPersist(persist);
+        return Promise.resolve();
+      },
     };
   } catch {
     return undefined;
@@ -329,6 +356,10 @@ LIMIT ?;
 
         return normalizeMessageIds(rows);
       },
+      removeByChat: async (args) => {
+        const statement = buildDeleteByChatStatement(args);
+        await db.execute(statement.sql, statement.params);
+      },
     };
   } catch {
     return undefined;
@@ -374,4 +405,13 @@ export async function searchMessageIdsByKeywordFts(args: FtsSearchArgs) {
   return engine.search(args);
 }
 
-export type { FtsIndexRecord, FtsSearchArgs };
+export async function removeMessagesByChatFromFts(args: FtsDeleteArgs) {
+  const engine = await getEngine();
+  if (!engine) {
+    return;
+  }
+
+  await engine.removeByChat(args);
+}
+
+export type { FtsDeleteArgs, FtsIndexRecord, FtsSearchArgs };

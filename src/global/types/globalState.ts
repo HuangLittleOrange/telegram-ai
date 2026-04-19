@@ -82,7 +82,7 @@ import type { SharedState } from './sharedState';
 import type { TabState, TimeRange, ToolOutput } from './tabState';
 
 export type ChatSyncMethod = 'dataExport' | 'getHistory';
-export type ChatSyncStatus = 'idle' | 'syncing' | 'paused' | 'completed' | 'error';
+export type ChatSyncStatus = 'idle' | 'syncing' | 'clearing' | 'paused' | 'completed' | 'error';
 
 export type PersistedAiAssistantTurn = {
   role: 'user' | 'assistant';

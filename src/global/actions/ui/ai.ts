@@ -44,6 +44,11 @@ import {
   createEmptyAiAssistantState,
   resetAiAssistantState,
 } from '../../helpers/aiRunState';
+import {
+  consumeAssistantThinkDelta,
+  createAssistantThinkStreamState,
+  flushAssistantThinkState,
+} from '../../helpers/aiText';
 import { type AiThinkingLog, createAiThinkingTraceStep } from '../../helpers/aiThinking';
 import {
   executeHistoryFetchToolCall,
@@ -93,6 +98,7 @@ const MAX_AI_TOOL_OUTPUTS = 8;
 const MAX_PERSISTED_AI_ASSISTANT_SESSIONS = 120;
 const AI_ASSISTANT_SESSION_KEY_PREFIX = 'ai';
 const AI_ASSISTANT_SESSION_DEFAULT_SCOPE = 'default';
+const MAX_HISTORY_FETCH_TOOL_ROUNDS = 8;
 
 type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
@@ -355,7 +361,7 @@ function getAiProviderDefaults(provider: SupportedAiProvider) {
   }
 
   return {
-    model: 'gpt-4.1-mini',
+    model: 'gemma4:e4b',
   };
 }
 
@@ -380,7 +386,7 @@ function isAbortError(error: unknown) {
 async function requestAiCompletion(
   provider: SupportedAiProvider,
   model: string,
-  apiKey: string,
+  apiKey: string | undefined,
   baseUrl: string | undefined,
   prompt: string,
   options?: {
@@ -391,6 +397,10 @@ async function requestAiCompletion(
   },
 ): Promise<string | ReadableStreamDefaultReader<Uint8Array>> {
   if (provider === 'gemini') {
+    if (!apiKey) {
+      throw new Error('Missing API key. Configure it in Settings > AI Settings.');
+    }
+
     const endpoint = getAiApiUrl(provider, baseUrl);
     const isStream = Boolean(options?.stream);
     const baseModelPath = endpoint.includes(':')
@@ -451,6 +461,10 @@ async function requestAiCompletion(
   }
 
   if (provider === 'anthropic') {
+    if (!apiKey) {
+      throw new Error('Missing API key. Configure it in Settings > AI Settings.');
+    }
+
     if (options?.stream) {
       throw new Error('Anthropic streaming is not supported in this runtime');
     }
@@ -495,7 +509,7 @@ async function requestAiCompletion(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined),
     },
     signal: options?.signal,
     body: JSON.stringify({
@@ -540,35 +554,183 @@ async function requestAiCompletion(
 
 type OpenAiToolCall = AiToolCall;
 
-type OpenAiChatCompletionChoice = {
-  message?: {
-    content?: string | Array<{ text?: string; type?: string }>;
-    tool_calls?: OpenAiToolCall[];
+type OpenAiToolCallChunk = {
+  index?: number;
+  id?: string;
+  type?: 'function';
+  function?: {
+    name?: string;
+    arguments?: string;
   };
 };
 
-type OpenAiChatCompletionResponse = {
-  choices?: OpenAiChatCompletionChoice[];
+type OpenAiChatCompletionChunk = {
+  choices?: Array<{
+    message?: {
+      content?: string | Array<{ text?: string; type?: string; value?: string }>;
+      reasoning_content?: string;
+      reasoning_details?: Array<{
+        text?: string;
+        content?: string;
+        type?: string;
+      }>;
+    };
+    delta?: {
+      content?: string | Array<{ text?: string; type?: string; value?: string }>;
+      reasoning?: string | {
+        text?: string;
+        content?: string;
+      } | Array<{
+        text?: string;
+        content?: string;
+        type?: string;
+      }>;
+      reasoning_content?: string;
+      reasoning_details?: Array<{
+        text?: string;
+        content?: string;
+        type?: string;
+      }>;
+      tool_calls?: OpenAiToolCallChunk[];
+    };
+  }>;
   error?: {
     message?: string;
   };
 };
 
-function parseOpenAiChatCompletionResponse(json: OpenAiChatCompletionResponse) {
-  const message = json.choices?.[0]?.message;
-  const content = parseOpenAiAssistantText(json);
-  const toolCalls = Array.isArray(message?.tool_calls)
-    ? message.tool_calls.filter((toolCall): toolCall is OpenAiToolCall => Boolean(
-      toolCall?.id
-      && toolCall?.function?.name
-      && typeof toolCall.function.arguments === 'string',
-    ))
-    : [];
+function isReasoningContentType(type: string | undefined) {
+  if (!type) {
+    return false;
+  }
 
-  return {
-    content: content || '',
-    toolCalls,
-  };
+  const normalizedType = type.toLowerCase();
+  return normalizedType.includes('reasoning') || normalizedType === 'thinking';
+}
+
+function parseOpenAiReasoningDeltaText(chunk: OpenAiChatCompletionChunk) {
+  const delta = chunk.choices?.[0]?.delta;
+  if (!delta) {
+    return '';
+  }
+
+  if (typeof delta.reasoning_content === 'string') {
+    return delta.reasoning_content;
+  }
+
+  if (typeof delta.reasoning === 'string') {
+    return delta.reasoning;
+  }
+
+  if (Array.isArray(delta.reasoning_details)) {
+    return delta.reasoning_details
+      .map((part) => (
+        typeof part?.text === 'string'
+          ? part.text
+          : (typeof part?.content === 'string' ? part.content : '')
+      ))
+      .join('');
+  }
+
+  if (delta.reasoning && typeof delta.reasoning === 'object') {
+    if (Array.isArray(delta.reasoning)) {
+      return delta.reasoning
+        .map((part) => (
+          typeof part?.text === 'string'
+            ? part.text
+            : (typeof part?.content === 'string' ? part.content : '')
+        ))
+        .join('');
+    }
+
+    if (typeof delta.reasoning.text === 'string') {
+      return delta.reasoning.text;
+    }
+
+    if (typeof delta.reasoning.content === 'string') {
+      return delta.reasoning.content;
+    }
+  }
+
+  const content = delta.content;
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .filter((part) => isReasoningContentType(part?.type))
+    .map((part) => (
+      typeof part?.text === 'string'
+        ? part.text
+        : (typeof part?.value === 'string' ? part.value : '')
+    ))
+    .join('');
+}
+
+function parseOpenAiReasoningMessageText(chunk: OpenAiChatCompletionChunk) {
+  const message = chunk.choices?.[0]?.message;
+  if (!message) {
+    return '';
+  }
+
+  if (typeof message.reasoning_content === 'string') {
+    return message.reasoning_content;
+  }
+
+  if (Array.isArray(message.reasoning_details)) {
+    return message.reasoning_details
+      .map((part) => (
+        typeof part?.text === 'string'
+          ? part.text
+          : (typeof part?.content === 'string' ? part.content : '')
+      ))
+      .join('');
+  }
+
+  return '';
+}
+
+function parseOpenAiDeltaText(chunk: OpenAiChatCompletionChunk) {
+  const content = chunk.choices?.[0]?.delta?.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((part) => !isReasoningContentType(part?.type))
+      .map((part) => (
+        typeof part?.text === 'string'
+          ? part.text
+          : (typeof part?.value === 'string' ? part.value : '')
+      ))
+      .join('');
+    return text || '';
+  }
+
+  return '';
+}
+
+function parseOpenAiMessageText(chunk: OpenAiChatCompletionChunk) {
+  const content = chunk.choices?.[0]?.message?.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((part) => !isReasoningContentType(part?.type))
+      .map((part) => (
+        typeof part?.text === 'string'
+          ? part.text
+          : (typeof part?.value === 'string' ? part.value : '')
+      ))
+      .join('');
+
+    return text || '';
+  }
+
+  return '';
 }
 
 const OPENAI_CHAT_COMPLETION_TIMEOUT_MS = 45_000;
@@ -605,11 +767,12 @@ function createAbortSignalWithTimeout(signal: AbortSignal | undefined, timeoutMs
 async function requestOpenAiChatCompletion(args: {
   provider: SupportedAiProvider;
   model: string;
-  apiKey: string;
+  apiKey: string | undefined;
   baseUrl: string | undefined;
   messages: AiChatMessage[];
   tools?: Array<ReturnType<typeof buildHistoryFetchToolDefinition>>;
   temperature?: number;
+  onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<{ content: string; toolCalls: OpenAiToolCall[] }> {
   const {
@@ -620,6 +783,7 @@ async function requestOpenAiChatCompletion(args: {
     messages,
     tools,
     temperature = 0.3,
+    onTextDelta,
     signal,
   } = args;
 
@@ -636,7 +800,7 @@ async function requestOpenAiChatCompletion(args: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined),
       },
       signal: requestController.signal,
       body: JSON.stringify({
@@ -644,7 +808,7 @@ async function requestOpenAiChatCompletion(args: {
         messages: serializeOpenAiCompatibleMessages(messages),
         ...(tools?.length ? { tools } : undefined),
         temperature,
-        stream: false,
+        stream: true,
       }),
     });
   } catch (error) {
@@ -654,15 +818,163 @@ async function requestOpenAiChatCompletion(args: {
     }
     throw error;
   }
-  requestController.cleanup();
-
-  const json: OpenAiChatCompletionResponse = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errorMessage = json?.error?.message || `OpenAI request failed (${response.status})`;
+    const rawError = await response.text().catch(() => '');
+    let errorMessage = `OpenAI request failed (${response.status})`;
+    if (rawError) {
+      try {
+        const parsedError = JSON.parse(rawError) as OpenAiChatCompletionChunk;
+        errorMessage = parsedError?.error?.message || rawError || errorMessage;
+      } catch {
+        errorMessage = rawError;
+      }
+    }
+    requestController.cleanup();
     throw new Error(errorMessage);
   }
 
-  return parseOpenAiChatCompletionResponse(json);
+  const reader = response.body?.getReader();
+  if (!reader) {
+    requestController.cleanup();
+    throw new Error('OpenAI stream is empty');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let hasSeenReasoningDelta = false;
+  const toolCallsByIndex = new Map<number, OpenAiToolCall>();
+
+  const upsertToolCall = (rawToolCall: OpenAiToolCallChunk) => {
+    const toolCallIndex = typeof rawToolCall.index === 'number' ? rawToolCall.index : toolCallsByIndex.size;
+    const existing = toolCallsByIndex.get(toolCallIndex);
+    const next: OpenAiToolCall = existing || {
+      id: '',
+      type: 'function',
+      function: {
+        name: '',
+        arguments: '',
+      },
+    };
+
+    if (typeof rawToolCall.id === 'string' && rawToolCall.id) {
+      next.id = rawToolCall.id;
+    }
+    if (rawToolCall.type === 'function') {
+      next.type = 'function';
+    }
+    if (typeof rawToolCall.function?.name === 'string' && rawToolCall.function.name) {
+      next.function.name += rawToolCall.function.name;
+    }
+    if (typeof rawToolCall.function?.arguments === 'string' && rawToolCall.function.arguments) {
+      next.function.arguments += rawToolCall.function.arguments;
+    }
+
+    toolCallsByIndex.set(toolCallIndex, next);
+  };
+
+  const parseDataLine = (rawData: string) => {
+    const data = rawData.trim();
+    if (!data || data === '[DONE]') {
+      return data === '[DONE]';
+    }
+
+    let chunk: OpenAiChatCompletionChunk;
+    try {
+      chunk = JSON.parse(data);
+    } catch {
+      return false;
+    }
+
+    if (chunk.error?.message) {
+      throw new Error(chunk.error.message);
+    }
+
+    const reasoningDelta = parseOpenAiReasoningDeltaText(chunk);
+    const reasoningMessageFallback = !reasoningDelta && !hasSeenReasoningDelta
+      ? parseOpenAiReasoningMessageText(chunk)
+      : '';
+    const reasoningText = reasoningDelta || reasoningMessageFallback;
+    if (reasoningText) {
+      hasSeenReasoningDelta = true;
+      // Emit each reasoning chunk as an independent think block so the panel
+      // can show progress immediately, instead of waiting for normal content.
+      onTextDelta?.(`<think>${reasoningText}</think>`);
+    }
+
+    const textDelta = parseOpenAiDeltaText(chunk);
+    const messageTextFallback = !textDelta && !content
+      ? parseOpenAiMessageText(chunk)
+      : '';
+    const visibleText = textDelta || messageTextFallback;
+    if (visibleText) {
+      content += visibleText;
+      onTextDelta?.(visibleText);
+    }
+
+    const toolCalls = chunk.choices?.[0]?.delta?.tool_calls;
+    if (Array.isArray(toolCalls)) {
+      toolCalls.forEach(upsertToolCall);
+    }
+
+    return false;
+  };
+
+  try {
+    let hasDone = false;
+
+    while (!hasDone) {
+      const readResult = await reader.read();
+      if (readResult.done) {
+        break;
+      }
+
+      buffer += decoder.decode(readResult.value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data:')) {
+          continue;
+        }
+
+        hasDone = parseDataLine(line.slice(5));
+        if (hasDone) {
+          break;
+        }
+      }
+    }
+
+    if (buffer.trim().startsWith('data:')) {
+      parseDataLine(buffer.trim().slice(5));
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new Error(`OpenAI request timed out after ${OPENAI_CHAT_COMPLETION_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  } finally {
+    requestController.cleanup();
+    try {
+      await reader.cancel();
+    } catch {
+      // Ignore cancellation failures.
+    }
+  }
+
+  const toolCalls = [...toolCallsByIndex.entries()]
+    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+    .map(([, toolCall]) => toolCall)
+    .filter((toolCall): toolCall is OpenAiToolCall => Boolean(
+      toolCall.id
+      && toolCall.function?.name
+      && typeof toolCall.function.arguments === 'string',
+    ));
+
+  return {
+    content,
+    toolCalls,
+  };
 }
 
 addActionHandler('toggleAiAssistant', (global, actions, payload): ActionReturnType => {
@@ -817,9 +1129,7 @@ addActionHandler('appendAiTurn', (global, actions, payload): ActionReturnType =>
     tabId = getCurrentTabId(),
   } = payload;
 
-  const normalizedText = role === 'assistant'
-    ? (sanitizeAssistantText(text) || '')
-    : text;
+  const normalizedText = text;
   if (!normalizedText.trim()) {
     return global;
   }
@@ -923,11 +1233,23 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
   const aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
   const settings = global.settings.byKey.aiSettings;
   const provider = settings.provider;
-  const model = settings.model?.trim() || getAiProviderDefaults(provider).model;
+  const modelInput = settings.model?.trim();
+  const baseUrlInput = settings.baseUrl?.trim();
   const apiKey = settings.apiKey?.trim();
+  const hasAnyAiConfig = Boolean(modelInput || apiKey || baseUrlInput);
+  const model = modelInput || getAiProviderDefaults(provider).model;
   const signal = run.abortController.signal;
 
-  if (!apiKey) {
+  if (!hasAnyAiConfig) {
+    emitEvent({
+      type: 'run.error',
+      error: 'Missing AI settings. Configure at least one of Model ID / API Key / Base URL in Settings > AI Settings.',
+    });
+    aiRunController.finishRun(tabId, runId);
+    return;
+  }
+
+  if (provider !== 'openai' && !apiKey) {
     emitEvent({
       type: 'run.error',
       error: 'Missing API key. Configure it in Settings > AI Settings.',
@@ -937,6 +1259,21 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
   }
 
   try {
+    const currentMessageList = selectCurrentMessageList(global, tabId);
+    const currentChatId = currentMessageList?.chatId;
+    const currentChatSyncState = currentChatId
+      ? global.chatSync.byChatId[currentChatId]
+      : undefined;
+    const requestSystemPrompt = buildAiRequestSystemPrompt({
+      syncCoverage: currentChatId ? {
+        chatId: currentChatId,
+        oldestSyncedDate: currentChatSyncState?.oldestSyncedDate,
+        newestSyncedDate: currentChatSyncState?.newestSyncedDate,
+        syncedMessages: currentChatSyncState?.syncedMessages,
+        totalMessages: currentChatSyncState?.totalMessages,
+      } : undefined,
+    });
+
     const localEvidence: AiEvidenceItem[] = [];
     const contextEvidenceLines = formatAiPromptEvidenceLines(
       localEvidence.slice(-Math.min(localEvidence.length, 12)),
@@ -958,7 +1295,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     });
 
     const conversationMessages: AiChatMessage[] = buildAiConversationMessages({
-      systemPrompt: buildAiRequestSystemPrompt(),
+      systemPrompt: requestSystemPrompt,
       evidenceLines: contextEvidenceLines,
       toolOutputLines: toolOutputContextLines,
       turns: conversationTurns,
@@ -971,16 +1308,17 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       actualUsedCount: number,
       committedAt = Date.now(),
     ) => {
+      const normalizedFinalText = sanitizeAssistantText(finalText) || finalText;
       actions.setAiThinkingEndedAt({ thinkingEndedAt: committedAt, tabId });
       global = getGlobal();
       actions.appendAiTurn({
         role: 'assistant',
-        text: finalText,
+        text: normalizedFinalText,
         tabId,
         thinkingLog: buildThinkingLog(selectTabState(global, tabId).aiAssistant),
       });
       global = updateAiState(global, tabId, {
-        historyMessages: buildPersistentAiHistoryMessages(historyMessageSource, finalText),
+        historyMessages: buildPersistentAiHistoryMessages(historyMessageSource, normalizedFinalText),
       }, {
         persistSession: true,
       });
@@ -1003,9 +1341,23 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       const loopResult = await runAiQueryLoop({
         messages: conversationMessages,
         complete: async (messages) => {
-          const tools = shouldOfferHistoryFetchTool(messages)
+          const tools = shouldOfferHistoryFetchTool(messages, MAX_HISTORY_FETCH_TOOL_ROUNDS)
             ? [buildHistoryFetchToolDefinition()]
             : undefined;
+          const thinkStreamState = createAssistantThinkStreamState();
+          const emitThinkTrace = (thinkText: string) => {
+            const detail = thinkText.trim();
+            if (!detail) {
+              return;
+            }
+
+            emitEvent({
+              type: 'thinking.trace',
+              stage: 'answer',
+              title: '模型思考中',
+              detail,
+            });
+          };
           const completion = await requestOpenAiChatCompletion({
             provider,
             model,
@@ -1014,10 +1366,33 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             messages,
             tools,
             temperature: 0.3,
+            onTextDelta: (textDelta) => {
+              const parsedDelta = consumeAssistantThinkDelta(thinkStreamState, textDelta);
+              parsedDelta.thinkBlocks.forEach(emitThinkTrace);
+              if (!parsedDelta.visibleText) {
+                return;
+              }
+
+              emitEvent({
+                type: 'answer.delta',
+                textDelta: parsedDelta.visibleText,
+              });
+            },
             signal,
           });
+          const flushedThink = flushAssistantThinkState(thinkStreamState);
+          flushedThink.thinkBlocks.forEach(emitThinkTrace);
+          if (flushedThink.visibleText) {
+            emitEvent({
+              type: 'answer.delta',
+              textDelta: flushedThink.visibleText,
+            });
+          }
 
-          return completion;
+          return {
+            ...completion,
+            content: sanitizeAssistantText(completion.content) || '',
+          };
         },
         executeTool: async (toolCall) => {
           if (!isRunActive()) {
@@ -1107,7 +1482,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
       if (loopResult) {
         historyMessageSource = loopResult.messages;
-        finalAnswerText = sanitizeAssistantText(loopResult.content) || '';
+        finalAnswerText = loopResult.content || '';
       }
       actualUsedCount = localEvidence.length + fetchedCount;
     } else {
@@ -1127,13 +1502,13 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
         settings.baseUrl,
         fullPrompt,
         {
-          systemPrompt: buildAiRequestSystemPrompt(),
+          systemPrompt: requestSystemPrompt,
           temperature: 0.3,
           signal,
         },
-      );
+      ) as string;
       historyMessageSource = conversationMessages;
-      finalAnswerText = sanitizeAssistantText(responseText as string) || '';
+      finalAnswerText = responseText;
     }
 
     if (fallbackFinalText) {

@@ -151,6 +151,10 @@ export interface ActionPayloads {
     chatId: string;
     threadId?: ThreadId;
   };
+  clearChatSyncedMessages: {
+    chatId: string;
+    threadId?: ThreadId;
+  };
   saveSession: {
     sessionData?: ApiSessionData;
   };

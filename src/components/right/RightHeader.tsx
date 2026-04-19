@@ -197,6 +197,7 @@ const RightHeader: FC<OwnProps & StateProps> = ({
     openEditTopicPanel,
     updateGiftProfileFilter,
     openSettingsScreen,
+    clearAiTurns,
   } = getActions();
 
   const [isDeleteDialogOpen, openDeleteDialog, closeDeleteDialog] = useFlag();
@@ -257,6 +258,10 @@ const RightHeader: FC<OwnProps & StateProps> = ({
 
   const handleOpenAiSettings = useLastCallback(() => {
     openSettingsScreen({ screen: SettingsScreens.Ai });
+  });
+
+  const handleStartNewAiConversation = useLastCallback(() => {
+    clearAiTurns();
   });
 
   const handleClose = useLastCallback(() => {
@@ -411,6 +416,14 @@ const RightHeader: FC<OwnProps & StateProps> = ({
           <>
             <h3 className="title">AI Assistant</h3>
             <section className="tools">
+              <Button
+                round
+                color="translucent"
+                size="smaller"
+                ariaLabel="新对话"
+                onClick={handleStartNewAiConversation}
+                iconName="new-chat-filled"
+              />
               <Button
                 round
                 color="translucent"

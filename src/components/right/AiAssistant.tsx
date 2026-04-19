@@ -21,7 +21,6 @@ import { MAIN_THREAD_ID } from '../../api/types';
 import { SettingsScreens } from '../../types';
 
 import { isChatChannel, isChatGroup } from '../../global/helpers';
-import { sanitizeAssistantText } from '../../global/helpers/ai';
 import {
   type AiThinkingTraceStep,
   buildAiThinkingSummary,
@@ -92,11 +91,13 @@ type StateProps = {
     createdAt: number;
   }[];
   error?: string;
-  hasApiKey: boolean;
+  hasAiConfig: boolean;
 };
 
 const DEFAULT_SYNC_RANGE_DAYS = 30;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const HISTORY_SEARCH_DEBOUNCE_MS = 320;
+const CLEARING_HISTORY_NOTICE = '正在清空当前聊天本地记录…';
 
 const DEFAULT_SYNC_STATE: ChatSyncState = {
   selectedMethod: 'dataExport',
@@ -104,6 +105,10 @@ const DEFAULT_SYNC_STATE: ChatSyncState = {
   syncedMessages: 0,
   unsyncedMessages: 0,
 };
+const HIDDEN_ERROR_PATTERNS = [
+  /TeactN\.setGlobal/i,
+  /outdated global/i,
+];
 
 function toDateTimeLocalValue(timestamp: number) {
   const date = new Date(timestamp);
@@ -127,6 +132,11 @@ function formatDateOnly(timestamp?: number) {
   const day = String(date.getDate()).padStart(2, '0');
 
   return `${year}-${month}-${day}`;
+}
+
+function getStartOfTodayTimestampMs() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
 function getDefaultCustomRange() {
@@ -364,7 +374,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   thinkingEndedAt,
   thinkingTrace = [],
   error,
-  hasApiKey,
+  hasAiConfig,
   isActive,
 }) => {
   const {
@@ -377,6 +387,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     hydrateAiAssistantSession,
     loadChatSyncStats,
     pauseChatSync,
+    clearChatSyncedMessages,
     resetChatSync,
     setChatSyncMethod,
     setChatSyncTimeRange,
@@ -403,16 +414,21 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   const [historySearchMessages, setHistorySearchMessages] = useState<SyncedHistoryMessageItem[]>([]);
   const [isHistorySearchLoading, setIsHistorySearchLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | undefined>();
+  const [historyNotice, setHistoryNotice] = useState<string | undefined>();
   const [historyDayQuery, setHistoryDayQuery] = useState('');
   const [historyGlobalQuery, setHistoryGlobalQuery] = useState('');
   const [selectedHistoryDayStartSec, setSelectedHistoryDayStartSec] = useState<number | undefined>();
+  const [liveDraftVisibleLength, setLiveDraftVisibleLength] = useState(0);
   const isSupportedChat = Boolean(chat && (isChatGroup(chat) || isChatChannel(chat)));
   const resolvedThreadId = threadId || MAIN_THREAD_ID;
   const isStreaming = streamStatus === 'streaming' || streamStatus === 'cancelling';
   const isCancelling = streamStatus === 'cancelling';
   const liveDraftText = streamStatus === 'done'
     ? ''
-    : sanitizeAssistantText(finalText || draftText) || finalText || draftText || '';
+    : finalText || draftText || '';
+  const visibleError = error && HIDDEN_ERROR_PATTERNS.some((pattern) => pattern.test(error))
+    ? undefined
+    : error;
   const hasLiveDraft = Boolean(liveDraftText.trim());
 
   useEffect(() => {
@@ -450,15 +466,45 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     return () => window.clearInterval(timer);
   }, [isLoading, isStreaming, syncState.status]);
 
+  useEffect(() => {
+    if (!hasLiveDraft) {
+      setLiveDraftVisibleLength(0);
+      return undefined;
+    }
+
+    if (!isStreaming) {
+      setLiveDraftVisibleLength(liveDraftText.length);
+      return undefined;
+    }
+
+    setLiveDraftVisibleLength((current) => Math.min(current, liveDraftText.length));
+
+    const timer = window.setInterval(() => {
+      setLiveDraftVisibleLength((current) => {
+        if (current >= liveDraftText.length) {
+          return current;
+        }
+
+        const remaining = liveDraftText.length - current;
+        const step = remaining > 48 ? 4 : remaining > 18 ? 2 : 1;
+        return Math.min(liveDraftText.length, current + step);
+      });
+    }, 20);
+
+    return () => window.clearInterval(timer);
+  }, [hasLiveDraft, isStreaming, liveDraftText]);
+
   const syncStatusText = syncState.status === 'syncing'
     ? '同步中'
-    : syncState.status === 'paused'
-      ? '已暂停'
-      : syncState.status === 'completed'
-        ? '已完成'
-        : syncState.status === 'error'
-          ? '同步失败'
-          : '待同步';
+    : syncState.status === 'clearing'
+      ? '清空中'
+      : syncState.status === 'paused'
+        ? '已暂停'
+        : syncState.status === 'completed'
+          ? '已完成'
+          : syncState.status === 'error'
+            ? '同步失败'
+            : '待同步';
   const syncedRangeStartTimestamp = syncState.oldestSyncedDate;
   const syncedRangeStartText = formatDateOnly(syncedRangeStartTimestamp);
   const syncedRangeEndText = formatDateOnly(syncState.newestSyncedDate);
@@ -471,6 +517,8 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   const syncNoProgressSeconds = syncState.status === 'syncing' && syncState.lastProgressAt
     ? Math.max(0, Math.floor((now - syncState.lastProgressAt) / 1000))
     : 0;
+  const isSyncBusy = syncState.status === 'syncing' || syncState.status === 'clearing';
+  const isClearingHistory = syncState.status === 'clearing';
   const syncErrorDetail = summarizeSyncErrorDetail(syncState.errorDetail);
   const syncErrorCode = resolveDisplayedSyncErrorCode(syncState.errorCode, syncState.errorDetail);
   const historyBounds = resolveTimeRangeBoundsSec(syncState.selectedTimeRange);
@@ -482,6 +530,28 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   const syncProgress = !progressBaseTotal
     ? 0
     : Math.max(0, Math.min(100, Math.round((syncState.syncedMessages / progressBaseTotal) * 100)));
+  const latestSyncedTimestamp = syncState.newestSyncedDate || syncState.oldestSyncedDate;
+  const isSyncedToToday = Boolean(latestSyncedTimestamp && latestSyncedTimestamp >= getStartOfTodayTimestampMs());
+  const composerSyncHint = !hasAiConfig
+    ? '✨ 请先完成 AI 设置，然后更新聊天记录再提问。'
+    : syncedRangeStartTimestamp && latestSyncedTimestamp
+      ? isSyncedToToday
+        ? `✨ 当前回答基于 ${syncedRangeStartText} 至 ${syncedRangeEndText} 的已同步聊天记录。`
+        : `✨ 当前回答基于 ${syncedRangeStartText} 至 ${syncedRangeEndText} 的已同步聊天记录，请先更新数据以包含今天消息。`
+      : latestSyncedTimestamp
+        ? isSyncedToToday
+          ? `✨ 当前回答基于截至 ${syncedRangeEndText} 的已同步聊天记录。`
+          : `✨ 当前回答基于截至 ${syncedRangeEndText} 的已同步聊天记录，请先更新数据以包含今天消息。`
+        : '✨ 当前还没有可用聊天记录，请先更新数据。';
+  const emptyStateHistoryHint = syncedRangeStartTimestamp && latestSyncedTimestamp
+    ? isSyncedToToday
+      ? `当前基于 ${syncedRangeStartText} 至 ${syncedRangeEndText} 的已同步聊天记录。`
+      : `当前基于 ${syncedRangeStartText} 至 ${syncedRangeEndText} 的已同步聊天记录，请先更新数据以包含今天消息。`
+    : latestSyncedTimestamp
+      ? isSyncedToToday
+        ? `当前基于截至 ${syncedRangeEndText} 的已同步聊天记录。`
+        : `当前基于截至 ${syncedRangeEndText} 的已同步聊天记录，请先更新数据以包含今天消息。`
+      : '当前还没有可用聊天记录，请先更新数据。';
   const normalizedHistoryGlobalQuery = historyGlobalQuery.trim();
   const isHistoryGlobalSearchActive = Boolean(normalizedHistoryGlobalQuery);
   const selectedHistoryDay = selectedHistoryDayStartSec === undefined
@@ -542,6 +612,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     setHistoryMessages([]);
     setHistorySearchMessages([]);
     setHistoryError(undefined);
+    setHistoryNotice(undefined);
     setHistoryDayQuery('');
     setHistoryGlobalQuery('');
     setSelectedHistoryDayStartSec(undefined);
@@ -555,6 +626,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     let isCancelled = false;
     setIsHistoryDaysLoading(true);
     setHistoryError(undefined);
+    setHistoryNotice(undefined);
 
     void loadSyncedHistoryDays({
       chatId,
@@ -578,7 +650,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
           : undefined
       ));
       if (!days.length) {
-        setHistoryError('当前时间范围内还没有本地已同步消息');
+        setHistoryNotice('当前时间范围内还没有本地已同步消息');
       }
     }).catch(() => {
       if (isCancelled) {
@@ -586,6 +658,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
       }
 
       setHistoryError('读取按日聊天记录失败');
+      setHistoryNotice(undefined);
       setHistoryDays([]);
     }).finally(() => {
       if (!isCancelled) {
@@ -603,7 +676,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     isHistoryBrowserOpen,
     isSupportedChat,
     resolvedThreadId,
-    syncState.syncedMessages,
   ]);
 
   useEffect(() => {
@@ -614,6 +686,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     let isCancelled = false;
     setIsHistoryMessagesLoading(true);
     setHistoryError(undefined);
+    setHistoryNotice(undefined);
 
     void loadSyncedHistoryMessages({
       global: getGlobal(),
@@ -627,7 +700,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
 
       setHistoryMessages(messages);
       if (!messages.length) {
-        setHistoryError('这一天还没有本地已同步消息');
+        setHistoryNotice('这一天还没有本地已同步消息');
       }
     }).catch(() => {
       if (isCancelled) {
@@ -635,6 +708,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
       }
 
       setHistoryError('读取当天聊天记录失败');
+      setHistoryNotice(undefined);
       setHistoryMessages([]);
     }).finally(() => {
       if (!isCancelled) {
@@ -655,53 +729,63 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     if (!normalizedHistoryGlobalQuery) {
       setIsHistorySearchLoading(false);
       setHistorySearchMessages([]);
+      setHistoryNotice(undefined);
       return undefined;
     }
 
     let isCancelled = false;
-    setIsHistorySearchLoading(true);
     setHistoryError(undefined);
+    setHistoryNotice(undefined);
 
-    void loadSyncedHistorySearchMessages({
-      global: getGlobal(),
-      chatId,
-      threadId: resolvedThreadId,
-      keyword: normalizedHistoryGlobalQuery,
-      timeRange: historyRangeStartSec !== undefined && historyRangeEndSec !== undefined
-        ? {
-          startSec: historyRangeStartSec,
-          endSec: historyRangeEndSec,
+    const timer = window.setTimeout(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setIsHistorySearchLoading(true);
+      void loadSyncedHistorySearchMessages({
+        global: getGlobal(),
+        chatId,
+        threadId: resolvedThreadId,
+        keyword: normalizedHistoryGlobalQuery,
+        timeRange: historyRangeStartSec !== undefined && historyRangeEndSec !== undefined
+          ? {
+            startSec: historyRangeStartSec,
+            endSec: historyRangeEndSec,
+          }
+          : undefined,
+      }).then((messages) => {
+        if (isCancelled) {
+          return;
         }
-        : undefined,
-    }).then((messages) => {
-      if (isCancelled) {
-        return;
-      }
 
-      setHistorySearchMessages(messages);
-      setSelectedHistoryDayStartSec((current) => (
-        current !== undefined && messages.some((message) => message.dayStartSec === current)
-          ? current
-          : undefined
-      ));
-      if (!messages.length) {
-        setHistoryError('当前范围内没有匹配这个关键词的本地聊天记录');
-      }
-    }).catch(() => {
-      if (isCancelled) {
-        return;
-      }
+        setHistorySearchMessages(messages);
+        setSelectedHistoryDayStartSec((current) => (
+          current !== undefined && messages.some((message) => message.dayStartSec === current)
+            ? current
+            : undefined
+        ));
+        if (!messages.length) {
+          setHistoryNotice('当前范围内没有匹配这个关键词的本地聊天记录');
+        }
+      }).catch(() => {
+        if (isCancelled) {
+          return;
+        }
 
-      setHistoryError('读取全局搜索结果失败');
-      setHistorySearchMessages([]);
-    }).finally(() => {
-      if (!isCancelled) {
-        setIsHistorySearchLoading(false);
-      }
-    });
+        setHistoryError('读取全局搜索结果失败');
+        setHistoryNotice(undefined);
+        setHistorySearchMessages([]);
+      }).finally(() => {
+        if (!isCancelled) {
+          setIsHistorySearchLoading(false);
+        }
+      });
+    }, HISTORY_SEARCH_DEBOUNCE_MS);
 
     return () => {
       isCancelled = true;
+      window.clearTimeout(timer);
     };
   }, [
     chatId,
@@ -725,6 +809,25 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     setIsTakeoutHelpOpen(true);
   }, [syncState.requiresTakeoutAuthorization, syncState.status, syncState.updatedAt]);
 
+  const previousSyncStatusRef = useRef(syncState.status);
+  useEffect(() => {
+    const previousStatus = previousSyncStatusRef.current;
+    previousSyncStatusRef.current = syncState.status;
+
+    if (previousStatus !== 'clearing' || syncState.status === 'clearing') {
+      return;
+    }
+
+    if (syncState.status === 'error') {
+      setHistoryError(syncState.error || '清空本地记录失败，请稍后重试');
+      setHistoryNotice(undefined);
+      return;
+    }
+
+    setHistoryError(undefined);
+    setHistoryNotice('已清空当前聊天的本地同步记录。');
+  }, [syncState.error, syncState.status]);
+
   const applyCustomStartTime = useLastCallback((startAt: number) => {
     const normalizedEndAt = Date.now();
     if (!startAt || !normalizedEndAt || startAt >= normalizedEndAt) {
@@ -738,6 +841,36 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         startAt,
         endAt: normalizedEndAt,
       },
+    });
+  });
+
+  const closeHistoryBrowser = useLastCallback(() => {
+    setIsHistoryBrowserOpen(false);
+    if (syncState.status === 'syncing') {
+      pauseChatSync({ chatId, threadId: resolvedThreadId });
+    }
+  });
+
+  const handleClearSyncedHistory = useLastCallback(() => {
+    if (isClearingHistory) {
+      return;
+    }
+
+    if (!window.confirm('确认清空当前聊天的本地已同步记录吗？此操作不可撤销。')) {
+      return;
+    }
+
+    setHistoryError(undefined);
+    setHistoryNotice(CLEARING_HISTORY_NOTICE);
+    setSelectedHistoryDayStartSec(undefined);
+    setHistoryDayQuery('');
+    setHistoryGlobalQuery('');
+    setHistoryDays([]);
+    setHistoryMessages([]);
+    setHistorySearchMessages([]);
+    clearChatSyncedMessages({
+      chatId,
+      threadId: resolvedThreadId,
     });
   });
 
@@ -767,6 +900,9 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   });
 
   const hasTurns = turns.length > 0;
+  const liveDraftAnimatedText = hasLiveDraft && isStreaming
+    ? liveDraftText.slice(0, liveDraftVisibleLength)
+    : liveDraftText;
   const hasLiveRun = Boolean(
     isStreaming
     || (isLoading && (
@@ -850,7 +986,10 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         {isExpanded && Boolean(stepCount) && (
           <div className="AiAssistant__thinkingSteps allow-selection">
             {log.steps.map((item, idx) => (
-              <div key={`${item.createdAt}_${idx}`} className="AiAssistant__thinkingStep">
+              <div
+                key={`${item.createdAt}_${item.stage}_${item.title}_${item.detail || ''}`}
+                className="AiAssistant__thinkingStep"
+              >
                 <div className="AiAssistant__thinkingStepHeader">
                   <span className="AiAssistant__thinkingStepStage">
                     {THINKING_STAGE_LABELS[item.stage]}
@@ -888,115 +1027,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
 
   return (
     <div className={buildClassName('AiAssistant panel-content', !isActive && 'is-hidden')}>
-      {isSupportedChat && (
-        <div className={buildClassName('AiAssistant__syncCard', `is-${syncState.status}`)}>
-          <div className="AiAssistant__syncHeader">
-            <div className="AiAssistant__syncTitle">AI 聊天记录同步</div>
-            <div className="AiAssistant__syncStatus">{syncStatusText}</div>
-          </div>
-          <div className="AiAssistant__syncMetrics">
-            <span>
-              总量：
-              {syncState.totalMessages || 0}
-            </span>
-            <span>
-              已同步：
-              {syncState.syncedMessages}
-            </span>
-          </div>
-          {(!isRangeScopedSync || hasReliableScopedTotal) && (
-            <div className="AiAssistant__syncProgressTrack">
-              <div className="AiAssistant__syncProgressFill" style={`width: ${syncProgress}%`} />
-            </div>
-          )}
-          <div className="AiAssistant__syncOldest">
-            已同步时间：
-            {syncedRangeStartText}
-            {' '}
-            至
-            {' '}
-            {syncedRangeEndText}
-          </div>
-          {syncState.status === 'syncing' && syncNoProgressSeconds >= 10 && (
-            <div className="AiAssistant__syncHint">
-              {syncNoProgressSeconds >= 45
-                ? `同步可能卡住（${syncNoProgressSeconds} 秒无进展），建议暂停后继续同步`
-                : `正在同步中，最近 ${syncNoProgressSeconds} 秒无新增进展`}
-            </div>
-          )}
-          {syncState.error && (
-            <div className="AiAssistant__syncError">
-              <div>{syncState.error}</div>
-              {syncErrorCode && (
-                <div className="AiAssistant__syncErrorCode">
-                  错误码：
-                  {' '}
-                  {syncErrorCode}
-                </div>
-              )}
-              {syncErrorDetail && (
-                <div className="AiAssistant__syncErrorDetail">
-                  详情：
-                  {' '}
-                  {syncErrorDetail}
-                </div>
-              )}
-              {syncState.requiresTakeoutAuthorization && (
-                <button
-                  type="button"
-                  className="AiAssistant__syncErrorAction"
-                  onClick={() => setIsTakeoutHelpOpen(true)}
-                >
-                  查看授权指引
-                </button>
-              )}
-            </div>
-          )}
-          <div className="AiAssistant__syncActions">
-            <div className="AiAssistant__syncPrimarySlot">
-              {syncState.status === 'syncing' ? (
-                <Button
-                  className="AiAssistant__syncPrimaryAction"
-                  size="tiny"
-                  color="translucent"
-                  onClick={() => pauseChatSync({ chatId, threadId: resolvedThreadId })}
-                >
-                  暂停同步
-                </Button>
-              ) : (
-                <Button
-                  className="AiAssistant__syncPrimaryAction"
-                  size="tiny"
-                  color="primary"
-                  onClick={() => startChatSync({ chatId, threadId: resolvedThreadId })}
-                >
-                  {syncState.status === 'paused' ? '继续同步' : '开始同步'}
-                </Button>
-              )}
-            </div>
-            <button
-              type="button"
-              className="AiAssistant__syncSettingsTrigger"
-              onClick={() => setIsHistoryBrowserOpen((current) => !current)}
-              aria-label="按日期查看聊天记录"
-              title="按日期查看聊天记录"
-              disabled={!syncState.syncedMessages}
-            >
-              <Icon name="calendar" />
-            </button>
-            <button
-              type="button"
-              className="AiAssistant__syncSettingsTrigger"
-              onClick={() => setIsSyncSettingsOpen(true)}
-              aria-label="同步设置"
-              title="同步设置"
-            >
-              <Icon name="settings" />
-            </button>
-          </div>
-        </div>
-      )}
-
       {isSupportedChat && isSyncSettingsOpen && (
         <div
           className="AiAssistant__syncSettingsBackdrop"
@@ -1025,7 +1055,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                   name={`chat-sync-method-${chatId}`}
                   checked={syncState.selectedMethod === 'dataExport'}
                   onChange={() => setChatSyncMethod({ chatId, method: 'dataExport' })}
-                  disabled={syncState.status === 'syncing'}
+                  disabled={isSyncBusy}
                 />
                 Data Export（推荐）
               </label>
@@ -1035,7 +1065,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                   name={`chat-sync-method-${chatId}`}
                   checked={syncState.selectedMethod === 'getHistory'}
                   onChange={() => setChatSyncMethod({ chatId, method: 'getHistory' })}
-                  disabled={syncState.status === 'syncing'}
+                  disabled={isSyncBusy}
                 />
                 GetHistory（有风险）
               </label>
@@ -1070,14 +1100,14 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                     applyCustomStartTime(nextTimestamp);
                   }
                 }}
-                disabled={syncState.status === 'syncing'}
+                disabled={isSyncBusy}
               />
             </div>
             <div className="AiAssistant__syncSettingsActions">
               <Button
                 size="smaller"
                 color="translucent"
-                disabled={syncState.status === 'syncing'}
+                disabled={isSyncBusy}
                 onClick={() => {
                   resetChatSync({ chatId, threadId: resolvedThreadId });
                   startChatSync({ chatId, threadId: resolvedThreadId });
@@ -1164,7 +1194,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
       {isSupportedChat && (
         <Modal
           isOpen={isHistoryBrowserOpen}
-          onClose={() => setIsHistoryBrowserOpen(false)}
+          onClose={closeHistoryBrowser}
           title="按日期查看聊天记录"
           hasCloseButton
           className="AiAssistant__historyModal"
@@ -1172,6 +1202,111 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
           dialogClassName="AiAssistant__historyModalDialog"
         >
           <div className="AiAssistant__historyBrowser">
+            <div className={buildClassName('AiAssistant__historySyncBar', `is-${syncState.status}`)}>
+              <div className="AiAssistant__historySyncTop">
+                <div className="AiAssistant__historySyncStatus">
+                  同步状态：
+                  {' '}
+                  {syncStatusText}
+                </div>
+                <div className="AiAssistant__historySyncCount">
+                  已同步
+                  {' '}
+                  {syncState.syncedMessages}
+                  {' '}
+                  /
+                  {' '}
+                  {progressBaseTotal || syncState.totalMessages || 0}
+                </div>
+              </div>
+              {(!isRangeScopedSync || hasReliableScopedTotal) && (
+                <div className="AiAssistant__syncProgressTrack">
+                  <div className="AiAssistant__syncProgressFill" style={`width: ${syncProgress}%`} />
+                </div>
+              )}
+              <div className="AiAssistant__historySyncMeta">
+                已同步时间：
+                {' '}
+                {syncedRangeStartText}
+                {' '}
+                至
+                {' '}
+                {syncedRangeEndText}
+              </div>
+              {syncState.status === 'syncing' && syncNoProgressSeconds >= 10 && (
+                <div className="AiAssistant__syncHint">
+                  {syncNoProgressSeconds >= 45
+                    ? `同步可能卡住（${syncNoProgressSeconds} 秒无进展），建议暂停后继续同步`
+                    : `正在同步中，最近 ${syncNoProgressSeconds} 秒无新增进展`}
+                </div>
+              )}
+              {syncState.error && (
+                <div className="AiAssistant__syncError">
+                  <div>{syncState.error}</div>
+                  {syncErrorCode && (
+                    <div className="AiAssistant__syncErrorCode">
+                      错误码：
+                      {' '}
+                      {syncErrorCode}
+                    </div>
+                  )}
+                  {syncErrorDetail && (
+                    <div className="AiAssistant__syncErrorDetail">
+                      详情：
+                      {' '}
+                      {syncErrorDetail}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="AiAssistant__historySyncActions">
+                <Button
+                  className="AiAssistant__historySyncAction AiAssistant__historySyncAction--primary"
+                  size="tiny"
+                  color={syncState.status === 'syncing' || syncState.status === 'clearing' ? 'translucent' : 'primary'}
+                  disabled={syncState.status === 'clearing'}
+                  onClick={() => {
+                    if (syncState.status === 'syncing') {
+                      pauseChatSync({ chatId, threadId: resolvedThreadId });
+                      return;
+                    }
+                    if (syncState.status === 'clearing') {
+                      return;
+                    }
+                    startChatSync({ chatId, threadId: resolvedThreadId });
+                  }}
+                >
+                  {syncState.status === 'syncing'
+                    ? '暂停同步'
+                    : syncState.status === 'clearing'
+                      ? '清空中...'
+                      : '开始同步'}
+                </Button>
+                <Button
+                  className="AiAssistant__historySyncAction AiAssistant__historySyncAction--danger"
+                  size="tiny"
+                  color="danger"
+                  isText
+                  disabled={isClearingHistory}
+                  onClick={handleClearSyncedHistory}
+                >
+                  {isClearingHistory ? '清空中...' : '清空本地记录'}
+                </Button>
+              </div>
+              <div className="AiAssistant__historySyncActionHint">
+                仅清空当前聊天的本地同步记录，不会删除 Telegram 原始消息。
+              </div>
+              {syncState.requiresTakeoutAuthorization && syncState.status === 'error' && (
+                <button
+                  type="button"
+                  className="AiAssistant__syncErrorAction"
+                  onClick={() => setIsTakeoutHelpOpen(true)}
+                >
+                  查看授权指引
+                </button>
+              )}
+            </div>
+
             <div className="AiAssistant__historyBrowserHeader">
               {selectedHistoryDay ? (
                 <button
@@ -1183,6 +1318,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                       setHistoryMessages([]);
                     }
                     setHistoryError(undefined);
+                    setHistoryNotice(undefined);
                   }}
                 >
                   {isHistoryGlobalSearchActive ? '清除日期筛选' : '返回日期列表'}
@@ -1215,8 +1351,14 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
             </div>
 
             {historyError && (
-              <div className="AiAssistant__historyEmpty">
+              <div className="AiAssistant__historyEmpty is-error">
                 {historyError}
+              </div>
+            )}
+
+            {!historyError && historyNotice && (
+              <div className="AiAssistant__historyEmpty">
+                {historyNotice}
               </div>
             )}
 
@@ -1280,7 +1422,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                               key={message.messageId}
                               className="AiAssistant__historyMessage"
                               onClick={() => {
-                                setIsHistoryBrowserOpen(false);
+                                closeHistoryBrowser();
                                 focusMessage({
                                   chatId,
                                   messageId: message.messageId,
@@ -1311,7 +1453,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                             key={message.messageId}
                             className="AiAssistant__historyMessage"
                             onClick={() => {
-                              setIsHistoryBrowserOpen(false);
+                              closeHistoryBrowser();
                               focusMessage({
                                 chatId,
                                 messageId: message.messageId,
@@ -1344,11 +1486,11 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         </Modal>
       )}
 
-      {!hasApiKey && (
+      {!hasAiConfig && (
         <div className="AiAssistant__notice">
           <div className="AiAssistant__notice-title">需要先完成 AI 设置</div>
           <div className="AiAssistant__notice-text">
-            请先在 AI 设置里填写 API Key，然后再让助手分析当前聊天。
+            请先在 AI 设置里至少填写一个参数（Model ID / API Key / Base URL），然后再让助手分析当前聊天。
           </div>
           <button
             type="button"
@@ -1360,15 +1502,13 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         </div>
       )}
 
-      {error && <div className="AiAssistant__error">{error}</div>}
+      {visibleError && <div className="AiAssistant__error">{visibleError}</div>}
 
       <div className="AiAssistant__body">
         <div className="AiAssistant__messages custom-scroll">
           {turns.map((turn, index) => (
             (() => {
-              const normalizedText = turn.role === 'assistant'
-                ? (sanitizeAssistantText(turn.text) || '')
-                : turn.text;
+              const normalizedText = turn.text;
               if (!normalizedText.trim()) {
                 return undefined;
               }
@@ -1426,7 +1566,10 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                 <div className="AiAssistant__liveDraft">
                   <div className="AiAssistant__message-role">草稿答案</div>
                   <div className="AiAssistant__message-text allow-selection">
-                    {renderAssistantContent(liveDraftText)}
+                    {renderAssistantContent(liveDraftAnimatedText)}
+                    {isStreaming && (
+                      <span className="AiAssistant__typingCaret" aria-hidden="true" />
+                    )}
                   </div>
                 </div>
               )}
@@ -1449,48 +1592,81 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
           {!hasTurns && !isLoading && !isStreaming && (
             <div className="AiAssistant__empty-state">
               <div className="AiAssistant__empty-copy">
-                <div className="AiAssistant__empty-title">可以直接让我处理聊天记录</div>
-                <div className="AiAssistant__empty-text">
-                  我会读取当前聊天和历史记录，帮你总结、判断任务是否完成、生成回复，或者继续向前补充信息。
-                </div>
-                <div className="AiAssistant__quick-actions">
-                  <button
-                    type="button"
-                    className="AiAssistant__quick-action"
-                    onClick={() => requestAiSummaryToday()}
-                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
-                  >
-                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
-                    <span className="AiAssistant__quick-action-copy">
-                      <span className="AiAssistant__quick-action-title">整理今天</span>
-                      <span className="AiAssistant__quick-action-text">提炼今天的聊天结果</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="AiAssistant__quick-action"
-                    onClick={() => requestAiReplySuggestions()}
-                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
-                  >
-                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
-                    <span className="AiAssistant__quick-action-copy">
-                      <span className="AiAssistant__quick-action-title">帮我回复</span>
-                      <span className="AiAssistant__quick-action-text">生成可直接发送的回话</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="AiAssistant__quick-action"
-                    onClick={() => requestAiExtractTodos()}
-                    disabled={!hasApiKey || Boolean(isLoading) || isStreaming}
-                  >
-                    <Icon name="boost" className="AiAssistant__quick-action-icon" />
-                    <span className="AiAssistant__quick-action-copy">
-                      <span className="AiAssistant__quick-action-title">整理待办</span>
-                      <span className="AiAssistant__quick-action-text">提取行动项和跟进项</span>
-                    </span>
-                  </button>
-                </div>
+                {hasAiConfig ? (
+                  <>
+                    <div className="AiAssistant__empty-title">我会基于已同步聊天记录帮你处理</div>
+                    <div className="AiAssistant__empty-text">
+                      {emptyStateHistoryHint}
+                      {' '}
+                      我可以帮你总结、判断任务是否完成、生成回复，或者继续向前补充信息。
+                    </div>
+                    {isSupportedChat && (
+                      <button
+                        type="button"
+                        className="AiAssistant__empty-link"
+                        onClick={() => setIsHistoryBrowserOpen(true)}
+                      >
+                        想要更好的结果？去同步更多聊天记录
+                      </button>
+                    )}
+                    <div className="AiAssistant__quick-actions">
+                      <button
+                        type="button"
+                        className="AiAssistant__quick-action"
+                        onClick={() => requestAiSummaryToday()}
+                        disabled={!hasAiConfig || Boolean(isLoading) || isStreaming}
+                      >
+                        <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                        <span className="AiAssistant__quick-action-copy">
+                          <span className="AiAssistant__quick-action-title">整理今天</span>
+                          <span className="AiAssistant__quick-action-text">提炼今天的聊天结果</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="AiAssistant__quick-action"
+                        onClick={() => requestAiReplySuggestions()}
+                        disabled={!hasAiConfig || Boolean(isLoading) || isStreaming}
+                      >
+                        <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                        <span className="AiAssistant__quick-action-copy">
+                          <span className="AiAssistant__quick-action-title">帮我回复</span>
+                          <span className="AiAssistant__quick-action-text">生成可直接发送的回话</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="AiAssistant__quick-action"
+                        onClick={() => requestAiExtractTodos()}
+                        disabled={!hasAiConfig || Boolean(isLoading) || isStreaming}
+                      >
+                        <Icon name="boost" className="AiAssistant__quick-action-icon" />
+                        <span className="AiAssistant__quick-action-copy">
+                          <span className="AiAssistant__quick-action-title">整理待办</span>
+                          <span className="AiAssistant__quick-action-text">提取行动项和跟进项</span>
+                        </span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="AiAssistant__empty-title">请先完成 AI 设置</div>
+                    <div className="AiAssistant__empty-text">
+                      先配置 Model ID / API Key / Base URL，然后再让助手基于聊天记录帮你分析与生成回复。
+                    </div>
+                    <button
+                      type="button"
+                      className="AiAssistant__quick-action"
+                      onClick={() => openSettingsScreen({ screen: SettingsScreens.Ai })}
+                    >
+                      <Icon name="settings" className="AiAssistant__quick-action-icon" />
+                      <span className="AiAssistant__quick-action-copy">
+                        <span className="AiAssistant__quick-action-title">打开 AI 设置</span>
+                        <span className="AiAssistant__quick-action-text">完成配置后即可开始提问</span>
+                      </span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1503,8 +1679,8 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
             <TextArea
               className="AiAssistant__composer-input"
               value={prompt}
-              placeholder="输入问题…"
-              disabled={isStreaming}
+              placeholder={hasAiConfig ? '输入问题…' : '请先完成 AI 设置'}
+              disabled={isStreaming || !hasAiConfig}
               noReplaceNewlines
               onKeyDown={handlePromptKeyDown}
               onChange={(e) => setPrompt(e.currentTarget.value)}
@@ -1515,7 +1691,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
               type="button"
               className={buildClassName('AiAssistant__send is-round', isStreaming && 'is-stop')}
               onClick={handleSendPrompt}
-              disabled={isStreaming ? isCancelling : (!hasApiKey || !prompt.trim() || Boolean(isLoading))}
+              disabled={isStreaming ? isCancelling : (!hasAiConfig || !prompt.trim() || Boolean(isLoading))}
               aria-label={isStreaming ? '中止' : '发送'}
             >
               <Icon name={isStreaming ? 'close' : 'up'} className="AiAssistant__send-icon" />
@@ -1524,6 +1700,18 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         </div>
         {isStreaming && (
           <div className="AiAssistant__composer-status">正在处理，可点发送按钮中止</div>
+        )}
+        {isSupportedChat && (
+          <div className="AiAssistant__composer-hint">
+            <span>{composerSyncHint}</span>
+            <button
+              type="button"
+              className="AiAssistant__composer-hint-link"
+              onClick={() => setIsHistoryBrowserOpen(true)}
+            >
+              更新数据
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -1548,7 +1736,12 @@ export default memo(withGlobal<OwnProps>(
       error,
     } = tabState.aiAssistant;
 
-    const hasApiKey = Boolean(global.settings.byKey.aiSettings.apiKey?.trim());
+    const aiSettings = global.settings.byKey.aiSettings;
+    const hasAiConfig = Boolean(
+      aiSettings.model?.trim()
+      || aiSettings.apiKey?.trim()
+      || aiSettings.baseUrl?.trim(),
+    );
 
     return {
       chat: selectChat(global, chatId),
@@ -1565,7 +1758,7 @@ export default memo(withGlobal<OwnProps>(
       thinkingEndedAt,
       thinkingTrace,
       error,
-      hasApiKey,
+      hasAiConfig,
     };
   },
 )(AiAssistant));

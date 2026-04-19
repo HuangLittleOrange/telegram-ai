@@ -158,14 +158,19 @@ function processChatInfoState<T extends GlobalState>({
 
   execAfterActions(() => {
     global = getGlobal();
+    const tabState = selectTabState(global, tabId);
     global = updateTabState(global, {
-      ...selectTabState(global, tabId),
+      ...tabState,
       chatInfo: {
         isOpen: true,
         profileTab: newProfileTab,
         forceScrollProfileTab: newForceScrollProfileTab,
         isOwnProfile: newIsOwnProfile,
       },
+      aiAssistant: tabState.aiAssistant ? {
+        ...tabState.aiAssistant,
+        isOpen: false,
+      } : undefined,
     }, tabId);
     global = { ...global, lastIsChatInfoShown: true };
     setGlobal(global);

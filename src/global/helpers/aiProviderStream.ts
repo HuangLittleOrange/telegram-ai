@@ -13,7 +13,6 @@ type AiStreamEventPayload = {
 
 type StreamParseState = {
   text: string;
-  insideThinkTag: boolean;
 };
 
 const STREAM_PACING_CHUNK_SIZE = 12;
@@ -103,36 +102,6 @@ function splitVisibleDeltaText(text: string) {
   return chunks;
 }
 
-function extractVisibleDeltaText(textDelta: string, state: StreamParseState) {
-  let visibleText = '';
-
-  for (let index = 0; index < textDelta.length; index++) {
-    if (!state.insideThinkTag && textDelta.startsWith('<think', index)) {
-      const closingBracketIndex = textDelta.indexOf('>', index);
-      if (closingBracketIndex === -1) {
-        state.insideThinkTag = true;
-        break;
-      }
-
-      state.insideThinkTag = true;
-      index = closingBracketIndex;
-      continue;
-    }
-
-    if (state.insideThinkTag && textDelta.startsWith('</think>', index)) {
-      state.insideThinkTag = false;
-      index += '</think>'.length - 1;
-      continue;
-    }
-
-    if (!state.insideThinkTag) {
-      visibleText += textDelta[index];
-    }
-  }
-
-  return visibleText;
-}
-
 function parseOpenAiDataLine(runId: string, data: string, state: StreamParseState): AiStreamEvent[] | 'done' {
   const trimmed = data.trim();
   if (!trimmed) return [];
@@ -163,9 +132,7 @@ function parseOpenAiDataLine(runId: string, data: string, state: StreamParseStat
   }
 
   state.text += textDelta;
-  const visibleTextDelta = extractVisibleDeltaText(textDelta, state);
-
-  return splitVisibleDeltaText(visibleTextDelta).map((chunk) => emitWithRunId(runId, {
+  return splitVisibleDeltaText(textDelta).map((chunk) => emitWithRunId(runId, {
     type: 'answer.delta',
     textDelta: chunk,
   }));
@@ -181,7 +148,7 @@ function parseSseLines(value: string) {
 export function normalizeOpenAiStreamChunks(args: NormalizeChunksArgs): AiStreamEvent[] {
   const { runId, chunks } = args;
   const events: AiStreamEvent[] = [];
-  const state: StreamParseState = { text: '', insideThinkTag: false };
+  const state: StreamParseState = { text: '' };
 
   for (const chunk of chunks) {
     const lines = parseSseLines(chunk);
@@ -218,7 +185,7 @@ export async function readAiProviderStream(args: ReadAiProviderStreamArgs): Prom
   } = args;
 
   const decoder = new TextDecoder();
-  const state: StreamParseState = { text: '', insideThinkTag: false };
+  const state: StreamParseState = { text: '' };
   let buffer = '';
 
   const emit = (event: AiStreamEventPayload) => onEvent(emitWithRunId(runId, event));

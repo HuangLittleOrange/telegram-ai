@@ -2,18 +2,13 @@ import type { FC } from '../../../lib/teact/teact';
 import type React from '../../../lib/teact/teact';
 import {
   memo,
-  useMemo,
 } from '../../../lib/teact/teact';
 import { getActions, withGlobal } from '../../../global';
-
-import type { IRadioOption } from '../../ui/RadioGroup';
 
 import useHistoryBack from '../../../hooks/useHistoryBack';
 import useLastCallback from '../../../hooks/useLastCallback';
 
 import InputText from '../../ui/InputText';
-import ListItem from '../../ui/ListItem';
-import RadioGroup from '../../ui/RadioGroup';
 
 type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
@@ -41,30 +36,12 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
 }) => {
   const {
     setSettingOption,
-    showNotification,
   } = getActions();
 
   useHistoryBack({
     isActive,
     onBack: onReset,
   });
-
-  const providerOptions = useMemo<IRadioOption[]>(() => {
-    return [
-      {
-        label: 'OpenAI',
-        value: 'openai',
-      },
-      {
-        label: 'Anthropic',
-        value: 'anthropic',
-      },
-      {
-        label: 'Gemini',
-        value: 'gemini',
-      },
-    ];
-  }, []);
 
   const updateAiSettings = useLastCallback((update: Partial<StateProps>) => {
     setSettingOption({
@@ -79,10 +56,6 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
     });
   });
 
-  const handleProviderChange = useLastCallback((value: string) => {
-    updateAiSettings({ provider: value as SupportedAiProvider });
-  });
-
   const handleModelChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     updateAiSettings({ model: e.currentTarget.value });
   });
@@ -95,30 +68,8 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
     updateAiSettings({ baseUrl: e.currentTarget.value });
   });
 
-  const handleDefaultContextChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const parsed = Number(e.currentTarget.value);
-    updateAiSettings({
-      defaultContextLimit: Number.isFinite(parsed) && parsed > 0 ? parsed : defaultContextLimit,
-    });
-  });
-
-  const handleClearKey = useLastCallback(() => {
-    updateAiSettings({ apiKey: '' });
-    showNotification({ message: 'API key cleared' });
-  });
-
   return (
     <div className="settings-content custom-scroll">
-      <div className="settings-item">
-        <h4 className="settings-item-header">Provider</h4>
-        <RadioGroup
-          name="ai-provider"
-          options={providerOptions}
-          selected={provider}
-          onChange={handleProviderChange}
-        />
-      </div>
-
       <div className="settings-item">
         <h4 className="settings-item-header">Model</h4>
         <InputText
@@ -139,23 +90,6 @@ const SettingsAi: FC<OwnProps & StateProps> = ({
           value={baseUrl}
           label="Base URL (optional)"
           onChange={handleBaseUrlChange}
-        />
-        <p className="section-info">
-          OpenAI-compatible URLs auto-append `/chat/completions`; Anthropic URLs auto-append `/messages`.
-        </p>
-        <ListItem icon="delete" narrow onClick={handleClearKey}>Clear API Key</ListItem>
-        <p className="section-info">
-          API key is stored in local browser cache. Do not use shared devices.
-        </p>
-      </div>
-
-      <div className="settings-item">
-        <h4 className="settings-item-header">Defaults</h4>
-        <InputText
-          value={String(defaultContextLimit)}
-          label="Default context messages"
-          inputMode="numeric"
-          onChange={handleDefaultContextChange}
         />
       </div>
     </div>

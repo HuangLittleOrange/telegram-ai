@@ -246,6 +246,24 @@ function resolveMessageSenderLabel(global: GlobalState, message: ApiMessage) {
   return resolveMessageSenderId(global, message) || '未知用户';
 }
 
+function resolveMessageSenderKeywordText(global: GlobalState, message: ApiMessage) {
+  const senderLabel = resolveMessageSenderLabel(global, message);
+  const sender = selectSender(global, message);
+  const usernames = sender?.usernames
+    ?.map((item) => item.username?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  const keywordChunks = [
+    senderLabel,
+    ...(usernames || []),
+    ...(usernames || []).map((username) => `@${username}`),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return keywordChunks.join(' ');
+}
+
 function matchesPerson(global: GlobalState, message: ApiMessage, person: PersonRef) {
   const senderId = resolveMessageSenderId(global, message);
   if (!senderId) {
@@ -306,8 +324,8 @@ function matchesKeyword(global: GlobalState, message: ApiMessage, keyword: strin
 
   const lang = getTranslationFn();
   const summaryText = getMessageSummaryText(lang, message, undefined, true, 500).trim();
-  const sender = resolveMessageSenderLabel(global, message);
-  const haystack = normalizeString(`${summaryText} ${sender}`);
+  const senderKeywordText = resolveMessageSenderKeywordText(global, message);
+  const haystack = normalizeString(`${summaryText} ${senderKeywordText}`);
   return Boolean(haystack?.includes(normalizeString(normalizedKeyword) || ''));
 }
 

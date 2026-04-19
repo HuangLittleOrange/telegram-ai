@@ -87,7 +87,7 @@ describe('aiProviderStream', () => {
     }));
   });
 
-  it('hides think content from visible deltas and splits large answer chunks into smaller updates', async () => {
+  it('keeps think content in visible deltas and splits large answer chunks into smaller updates', async () => {
     const reader = {
       read: jest.fn()
         .mockResolvedValueOnce({
@@ -113,7 +113,7 @@ describe('aiProviderStream', () => {
     const deltaEvents = events.filter((event) => event.type === 'answer.delta');
     expect(deltaEvents.length).toBeGreaterThan(1);
     expect(deltaEvents.map((event) => event.textDelta).join(''))
-      .toBe('第一句。第二句。第三句。第四句。第五句。第六句。');
-    expect(deltaEvents.some((event) => String(event.textDelta).includes('<think>'))).toBe(false);
+      .toBe('<think>hidden reasoning</think>第一句。第二句。第三句。第四句。第五句。第六句。');
+    expect(deltaEvents.some((event) => String(event.textDelta).includes('<think>'))).toBe(true);
   });
 });

@@ -22,7 +22,7 @@ type PersistedSyncSnapshot = {
 };
 
 type ResolveFinalSyncStatusArgs = {
-  currentStatus: 'idle' | 'syncing' | 'paused' | 'completed' | 'error';
+  currentStatus: 'idle' | 'syncing' | 'clearing' | 'paused' | 'completed' | 'error';
   takeoutSuccess: boolean;
   hadRuntimeError?: boolean;
 };
@@ -106,12 +106,65 @@ export function calculateUnsyncedMessages(totalMessages: number, syncedMessages:
   return Math.max(0, totalMessages - syncedMessages);
 }
 
+type MessageWithDate = {
+  date?: number;
+};
+
+export function countMessagesInRange(
+  messagesById: Record<string | number, MessageWithDate> | undefined,
+  bounds: TimeRangeBoundsSec | undefined,
+) {
+  if (!messagesById || !bounds) {
+    return 0;
+  }
+
+  return Object.values(messagesById).reduce((count, message) => {
+    const messageDate = message?.date;
+    if (!Number.isFinite(messageDate)) {
+      return count;
+    }
+
+    if ((messageDate as number) < bounds.startSec || (messageDate as number) >= bounds.endSec) {
+      return count;
+    }
+
+    return count + 1;
+  }, 0);
+}
+
+export function getOldestMessageDateInRange(
+  messagesById: Record<string | number, MessageWithDate> | undefined,
+  bounds: TimeRangeBoundsSec | undefined,
+) {
+  if (!messagesById || !bounds) {
+    return undefined;
+  }
+
+  let oldestDate: number | undefined;
+  Object.values(messagesById).forEach((message) => {
+    const messageDate = message?.date;
+    if (!Number.isFinite(messageDate)) {
+      return;
+    }
+
+    if ((messageDate as number) < bounds.startSec || (messageDate as number) >= bounds.endSec) {
+      return;
+    }
+
+    if (oldestDate === undefined || (messageDate as number) < oldestDate) {
+      oldestDate = messageDate;
+    }
+  });
+
+  return oldestDate;
+}
+
 export function resolveFinalChatSyncStatus({
   currentStatus,
   takeoutSuccess,
   hadRuntimeError,
 }: ResolveFinalSyncStatusArgs): ResolveFinalSyncStatusArgs['currentStatus'] {
-  if (currentStatus === 'paused' || currentStatus === 'error') {
+  if (currentStatus === 'paused' || currentStatus === 'error' || currentStatus === 'clearing') {
     return currentStatus;
   }
 
