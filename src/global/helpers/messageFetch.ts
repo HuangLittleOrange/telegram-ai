@@ -20,9 +20,8 @@ import { selectSender } from '../selectors/messages';
 import { selectThreadIdFromMessage, selectThreadLocalState } from '../selectors/threads';
 import { getMessageSummaryText } from './messageSummary';
 import { getPeerTitle } from './peers';
-import { searchMessageIdsByKeywordFts } from './sqliteFtsStore';
+import { searchSyncedRecordsByKeyword } from './syncedKeywordSearch';
 import {
-  getSyncedMessagesByIds,
   querySyncedMessages,
 } from './syncedMessagesStore';
 
@@ -354,6 +353,10 @@ function sortCandidateMessagesAsc(candidates: CandidateMessage[]) {
   return candidates.sort((left, right) => compareMessagesAsc(left.message, right.message));
 }
 
+function sortCandidateMessagesDesc(candidates: CandidateMessage[]) {
+  return candidates.sort((left, right) => compareMessagesDesc(left.message, right.message));
+}
+
 function buildSummary(
   query: MessageFetchQuery,
   count: number,
@@ -428,30 +431,10 @@ export async function runMessageFetch(
   let truncated = false;
 
   const readPersistedCandidates = async () => {
-    if (queryKeyword) {
-      const matchedIds = await searchMessageIdsByKeywordFts({
-        chatId: scope.chatId,
-        keyword: queryKeyword,
-        threadId: scope.threadId,
-        senderId: queryPerson?.peerId,
-        startSec: timeRange?.startSec,
-        endSec: timeRange?.endSec,
-        beforeMessageId: query.beforeMessageId,
-        limit: fetchBudget.maxScannedMessages,
-      });
-
-      if (matchedIds?.length) {
-        const records = await getSyncedMessagesByIds(scope.chatId, matchedIds);
-        return records
-          .map(({ message }) => toCandidate(message, global, 'store'))
-          .sort((left, right) => compareMessagesDesc(left.message, right.message));
-      }
-    }
-
-    const maxCount = query.mode === 'range'
+    const defaultMaxCount = query.mode === 'range'
       ? Number.MAX_SAFE_INTEGER
       : fetchBudget.maxScannedMessages;
-    const buildArgs = (senderId?: string) => ({
+    const buildArgs = (senderId?: string, maxCount = defaultMaxCount) => ({
       chatId: scope.chatId,
       threadId: scope.threadId,
       timeRange,
@@ -459,15 +442,36 @@ export async function runMessageFetch(
       senderId,
       maxCount,
     });
+    const readSyncedRecords = async (maxCount = defaultMaxCount) => {
+      let records = await querySyncedMessages(buildArgs(queryPerson?.peerId, maxCount));
+      if (!records.length && queryPerson?.peerId) {
+        records = await querySyncedMessages(buildArgs(undefined, maxCount));
+      }
 
-    let records = await querySyncedMessages(buildArgs(queryPerson?.peerId));
-    if (!records.length && queryPerson?.peerId) {
-      records = await querySyncedMessages(buildArgs(undefined));
+      return records;
+    };
+
+    if (queryKeyword) {
+      const records = await searchSyncedRecordsByKeyword({
+        chatId: scope.chatId,
+        keyword: queryKeyword,
+        threadId: scope.threadId,
+        senderId: queryPerson?.peerId,
+        timeRange,
+        beforeMessageId: query.beforeMessageId,
+        maxCount: limit,
+        filterFallbackRecord: (record) => matchesKeyword(global, record.message, queryKeyword),
+      });
+
+      return sortCandidateMessagesDesc(records
+        .map(({ message }) => toCandidate(message, global, 'store')));
     }
 
-    return records
-      .map(({ message }) => toCandidate(message, global, 'store'))
-      .sort((left, right) => compareMessagesDesc(left.message, right.message));
+    const records = await readSyncedRecords();
+
+    return sortCandidateMessagesDesc(records
+      .map(({ message }) => toCandidate(message, global, 'store')),
+    );
   };
 
   const pushCandidate = (candidate: CandidateMessage) => {
@@ -522,10 +526,7 @@ export async function runMessageFetch(
         ],
         timeRange,
       );
-    const finalSourceCandidates = matchedCandidates.length
-      ? matchedCandidates
-      : localSeedCandidates;
-    const finalCandidates = sortCandidateMessagesAsc(finalSourceCandidates.slice(0, limit));
+    const finalCandidates = sortCandidateMessagesAsc(matchedCandidates.slice(0, limit));
     const messages = finalCandidates.map(({ message, state }) => buildMessageRecord(scope, state, message));
     const evidenceIds = messages.map(({ messageId }) => messageId);
     const shouldContinue = truncated && !hasCompleteLocalRangeCoverage;

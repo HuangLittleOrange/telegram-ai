@@ -1,5 +1,6 @@
 import type { AiChatMessage, AiToolCall } from './aiAgentRuntime';
 
+import { resolveAiPromptLocale } from './aiLanguage';
 import { sanitizeAssistantText } from './aiText';
 
 type OpenAiCompatibleRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -43,6 +44,7 @@ export function buildAiConversationMessages(args: {
   toolOutputLines: string[];
   turns: AiChatMessage[];
   currentPrompt: string;
+  languageCode?: string;
 }) {
   const {
     systemPrompt,
@@ -50,7 +52,9 @@ export function buildAiConversationMessages(args: {
     toolOutputLines,
     turns,
     currentPrompt,
+    languageCode,
   } = args;
+  const isEnglishPrompt = resolveAiPromptLocale(languageCode) === 'en';
 
   const lastTurn = turns[turns.length - 1];
   const shouldAppendCurrentPrompt = !(
@@ -62,12 +66,12 @@ export function buildAiConversationMessages(args: {
     systemPrompt,
     ...(evidenceLines.length ? [
       '',
-      '当前聊天记录：',
+      isEnglishPrompt ? 'Current chat records:' : '当前聊天记录：',
       ...evidenceLines,
     ] : []),
     ...(toolOutputLines.length ? [
       '',
-      '工具结果：',
+      isEnglishPrompt ? 'Tool outputs:' : '工具结果：',
       ...toolOutputLines,
     ] : []),
   ].join('\n');

@@ -1,6 +1,11 @@
+/* eslint-disable @stylistic/max-len */
+
+import { resolveAiPromptLocale } from './aiLanguage';
+
 type AiPromptTimeContext = {
   now?: number;
   timeZone?: string;
+  languageCode?: string;
 };
 
 type AiPromptSyncCoverageContext = {
@@ -46,9 +51,18 @@ function formatPromptCurrentDateTime(now: number, timeZone?: string) {
   return formatter.format(new Date(now));
 }
 
-function buildAiTimeContextBlock({ now = Date.now(), timeZone }: AiPromptTimeContext = {}) {
+function buildAiTimeContextBlock({ now = Date.now(), timeZone, languageCode }: AiPromptTimeContext = {}) {
   const resolvedTimeZone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const formattedNow = formatPromptCurrentDateTime(now, resolvedTimeZone);
+  const locale = resolveAiPromptLocale(languageCode);
+
+  if (locale === 'en') {
+    return [
+      '## Time Context',
+      `Current time: ${formattedNow}`,
+      `Current time zone: ${resolvedTimeZone}`,
+    ];
+  }
 
   return [
     '## Time Context',
@@ -75,6 +89,7 @@ function buildAiLocalSyncCoverageBlock(context?: AiRequestPromptContext) {
     return undefined;
   }
 
+  const locale = resolveAiPromptLocale(context?.languageCode);
   const {
     oldestSyncedDate,
     newestSyncedDate,
@@ -82,13 +97,24 @@ function buildAiLocalSyncCoverageBlock(context?: AiRequestPromptContext) {
     totalMessages,
   } = syncCoverage;
 
+  const unknownLabel = locale === 'en' ? 'Unknown' : '未知';
   const rangeStart = oldestSyncedDate
     ? formatPromptDateOnly(oldestSyncedDate, resolvedTimeZone)
-    : '未知';
+    : unknownLabel;
   const rangeEndSource = newestSyncedDate || oldestSyncedDate;
   const rangeEnd = rangeEndSource
     ? formatPromptDateOnly(rangeEndSource, resolvedTimeZone)
-    : '未知';
+    : unknownLabel;
+
+  if (locale === 'en') {
+    return [
+      '## Local Sync Coverage',
+      `Current chat: ${syncCoverage.chatId}`,
+      `Locally synced date range: ${rangeStart} to ${rangeEnd}`,
+      `Locally synced messages: ${syncedMessages || 0}${totalMessages ? ` / ${totalMessages}` : ''}`,
+      'If the user asks about a time range outside this window, first clearly state: "Local sync coverage is insufficient for that range."',
+    ];
+  }
 
   return [
     '## Local Sync Coverage',
@@ -106,7 +132,7 @@ export function getAiPromptTimeContext(): AiPromptTimeContext {
   };
 }
 
-export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
+function buildChineseAiSystemPrompt(timeContext?: AiPromptTimeContext) {
   return joinPromptBlocks(
     [
       '## Identity',
@@ -150,18 +176,100 @@ export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
   );
 }
 
-export function buildAiRequestSystemPrompt(context?: AiRequestPromptContext) {
+function buildEnglishAiSystemPrompt(timeContext?: AiPromptTimeContext) {
   return joinPromptBlocks(
-    buildAiSystemPrompt(context),
-    buildAiLocalSyncCoverageBlock(context),
     [
-      '## Telegram Context',
-      '当前任务是围绕 Telegram 聊天记录完成总结、回复、待办或检索，不是泛泛闲聊。',
+      '## Identity',
+      'You are an advanced AI assistant for Telegram group chats. Your core task is to read and organize chat history, then turn it into actionable conclusions, reply drafts, or todo items.',
+    ],
+    buildAiTimeContextBlock(timeContext),
+    [
+      '## Protocol',
+      '1. Evaluate the request: first judge whether current context and memory are sufficient to complete the task.',
+      '2. Choose one core action per turn: either call tools to retrieve data, output a final answer directly, or ask the user for clarification. Do not mix tool-call chatter into the answer.',
+      '3. Be tool-frugal: when information is sufficient, answer directly. Never call tools just for the sake of calling tools.',
+      '4. Knowledge boundary: prioritize chat records (including tool results). If you must use general model knowledge, explicitly state this at the end (for example: "Note: the extra information above is based on general knowledge and was not mentioned in this chat history.").',
+    ],
+    [
+      '## Tool Contract: history-fetch',
+      'Purpose: retrieve additional context from this group chat by target (person/keyword) and time range.',
+      'Parameter rules (strict):',
+      '- Default scope: read the current chat by default. If no explicit target is provided, keep retrieval within the current chat only, not global.',
+      '- Combined filters: `keyword`, `person`, and `timeRange` can be combined; they are not mutually exclusive routes.',
+      '- Keyword semantics: `keyword` uses fuzzy match over both message content and sender name.',
+      '- Precise time conversion: for fuzzy references (like "last week", "yesterday", "this month"), convert to exact `fromDate` and `toDate` in YYYY-MM-DD. Weeks follow natural week boundaries (Monday to Sunday).',
+      '- Do not pass `preset`; only use structured `fromDate` and `toDate`.',
+      '- Prefer structured inputs: use `toolArgs` first. When searching a specific name or alias, include structured `keyword` in `toolQueryHints` as extra signal. Do not route based on literal-word guesswork.',
+      '- Iterative retrieval: if one retrieval yields too little and information is insufficient, call the tool again and expand `timeRange` first (for example: same day -> multiple days -> longer range).',
+      '- If tool result has `messageCount < 5`, you must expand `timeRange` at least one more round before finishing.',
+      '- Default handling: after multiple expansions, if results are still sparse (local sync not complete), explicitly tell the user local synced messages are insufficient in that range. Never fabricate summaries.',
+    ],
+    [
+      '## Output Style',
+      '- Tone: Telegram group style. Keep it concise and practical. Prefer short sentences and bullet points over bureaucratic prose.',
+      '- Utility first: if asked to draft a reply, provide a directly sendable draft.',
+      '- If the user asks for general facts/background and chat history lacks a direct answer, you may use model knowledge, but clearly mark that it is not from chat history.',
+      '- Standard structure for general questions: conclusion first, then chat-based evidence; if model knowledge is used, explicitly state that it is not from chat history.',
+      '- Detailed structure:',
+      '  1. [One-line conclusion]: answer directly.',
+      '  2. [Chat evidence]: briefly cite supporting chat records (if any).',
+      '  3. [Knowledge note]: include only when non-chat general knowledge is used.',
+      '- Clean ending: if information is insufficient and tool retrieval is needed, call tools directly. If answering, do not end with transitional filler such as "need to continue retrieval".',
+      '- Default language: follow the user language; use concise English for English users.',
     ],
   );
 }
 
+export function buildAiSystemPrompt(timeContext?: AiPromptTimeContext) {
+  const locale = resolveAiPromptLocale(timeContext?.languageCode);
+
+  return locale === 'en'
+    ? buildEnglishAiSystemPrompt(timeContext)
+    : buildChineseAiSystemPrompt(timeContext);
+}
+
+export function buildAiRequestSystemPrompt(context?: AiRequestPromptContext) {
+  const locale = resolveAiPromptLocale(context?.languageCode);
+
+  return joinPromptBlocks(
+    buildAiSystemPrompt(context),
+    buildAiLocalSyncCoverageBlock(context),
+    locale === 'en'
+      ? [
+        '## Telegram Context',
+        'The current task must stay focused on Telegram chat history: summarize, draft replies, extract todos, or retrieve records. This is not generic small talk.',
+      ]
+      : [
+        '## Telegram Context',
+        '当前任务是围绕 Telegram 聊天记录完成总结、回复、待办或检索，不是泛泛闲聊。',
+      ],
+  );
+}
+
 export function buildAiFinalAnswerSystemPrompt(timeContext?: AiPromptTimeContext) {
+  const locale = resolveAiPromptLocale(timeContext?.languageCode);
+
+  if (locale === 'en') {
+    return joinPromptBlocks(
+      [
+        '## Identity',
+        'You are the Telegram AI assistant and must provide the final answer based on available context.',
+      ],
+      buildAiTimeContextBlock(timeContext),
+      [
+        '## Final Answer Mode',
+        'No tool calls are allowed at this stage.',
+        'Do not output tool calls, do not ask for continued retrieval, and do not end with "need to continue retrieval".',
+        'If the user asks for general facts/background and chat history has no direct answer, you may answer from model knowledge, but explicitly state that this part is not from current chat history.',
+      ],
+      [
+        '## Output Style',
+        'Use Telegram group style: short sentences first; use bullet points only when needed.',
+        'Priority order: 1) direct conclusion, 2) whether there is direct chat evidence, 3) if model/common knowledge is used, clearly state it is not from current chat history.',
+      ],
+    );
+  }
+
   return joinPromptBlocks(
     [
       '## Identity',

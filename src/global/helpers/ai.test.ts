@@ -195,6 +195,43 @@ describe('ai helper', () => {
       expect(prompt).toContain('为什么大家不理他');
     });
 
+    it('builds English task and tool-output prompts for English users', () => {
+      const prompt = buildAiTaskPrompt(
+        'Answer user question',
+        'Answer the user directly based on chat history.',
+        'If information is sufficient, provide the answer directly.',
+        'What did Dengdeng say recently?',
+        ['[101] Dengdeng: Asia did miss blocks but it should recover soon.'],
+        ['User: What did Dengdeng say recently?'],
+        formatAiPromptToolOutputLines([
+          {
+            type: 'message.fetch',
+            query: {
+              mode: 'keyword',
+              keyword: 'dengdeng',
+              limit: 12,
+            },
+            result: {
+              messages: [],
+              total: 3,
+              truncated: false,
+              evidenceIds: [],
+              summary: 'Fetched 3 messages by keyword',
+            },
+            createdAt: 1712457240000,
+          } as never,
+        ], 4, 'en'),
+        { languageCode: 'en' },
+      );
+
+      expect(prompt).toContain('Current task: Answer user question');
+      expect(prompt).toContain('User question: What did Dengdeng say recently?');
+      expect(prompt).toContain('Chat records:');
+      expect(prompt).toContain('Conversation context:');
+      expect(prompt).toContain('Tool outputs:');
+      expect(prompt).toContain('Search by keyword: dengdeng');
+    });
+
     it('includes recent conversation context and tool output in the unified task prompt', () => {
       const prompt = buildAiTaskPrompt(
         '回答当前问题',
@@ -605,5 +642,4 @@ describe('ai helper', () => {
       expect(answer).toContain('先摘几条原话：');
     });
   });
-
 });

@@ -247,8 +247,7 @@ export async function loadAndChangeLanguage(langCode: string, shouldCheckCache?:
   await initialEstablishmentPromise;
   if (!isCurrentTabMaster()) return undefined;
 
-  const remoteLanguage = await callApi('fetchLanguage', {
-    langPack: LANG_PACK,
+  const remoteLanguage = await callApi('fetchLanguageBestEffort', {
     langCode,
   });
 
@@ -280,8 +279,7 @@ export async function changeLanguage(newLanguage: ApiLanguage) {
   } else {
     await initialEstablishmentPromise;
     if (!isCurrentTabMaster()) return;
-    const remoteLangPack = await callApi('fetchLangPack', {
-      langPack: LANG_PACK,
+    const remoteLangPack = await callApi('fetchLangPackBestEffort', {
       langCode: newLanguage.langCode,
     });
     if (!remoteLangPack) {

@@ -1,9 +1,12 @@
+/* eslint-disable @stylistic/max-len */
+
 import type {
   MessageFetchQuery,
   MessageFetchResult,
   ToolOutput,
 } from '../types/tabState';
 
+import { resolveAiPromptLocale } from './aiLanguage';
 import { sanitizeAssistantText } from './aiText';
 import {
   formatHistoryFetchToolResultForModel,
@@ -37,6 +40,35 @@ export const AI_CONTEXT_LIMIT_MAX = 500;
 export const AI_CONTEXT_LIMIT_DEFAULT = 100;
 
 type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
+type PresetRangeValue = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth';
+
+function isEnglishPrompt(languageCode?: string) {
+  return resolveAiPromptLocale(languageCode) === 'en';
+}
+
+function getPresetRangeLabel(value: PresetRangeValue, languageCode?: string) {
+  if (isEnglishPrompt(languageCode)) {
+    const englishLabels: Record<PresetRangeValue, string> = {
+      today: 'Today',
+      yesterday: 'Yesterday',
+      thisWeek: 'This week',
+      lastWeek: 'Last week',
+      thisMonth: 'This month',
+    };
+
+    return englishLabels[value];
+  }
+
+  const chineseLabels: Record<PresetRangeValue, string> = {
+    today: '今天',
+    yesterday: '昨天',
+    thisWeek: '本周',
+    lastWeek: '上周',
+    thisMonth: '本月',
+  };
+
+  return chineseLabels[value];
+}
 
 function joinPromptBlocks(...blocks: Array<string | Array<string | undefined> | undefined>) {
   return blocks
@@ -111,7 +143,10 @@ export function formatAiPromptEvidenceLines(items: Array<{
 export function formatAiPromptConversationContextLines(
   turns: AiPromptTurn[],
   limit = 6,
+  languageCode?: string,
 ) {
+  const englishPrompt = isEnglishPrompt(languageCode);
+
   return turns
     .slice(-limit)
     .map((turn) => {
@@ -120,48 +155,53 @@ export function formatAiPromptConversationContextLines(
         return undefined;
       }
 
-      const speaker = turn.role === 'assistant' ? 'AI' : '用户';
-      return `[${formatAiPromptTimestamp(turn.createdAt)}] ${speaker}：${normalizedText.trim()}`;
+      const speaker = turn.role === 'assistant' ? 'AI' : (englishPrompt ? 'User' : '用户');
+      return `[${formatAiPromptTimestamp(turn.createdAt)}] ${speaker}${englishPrompt ? ': ' : '：'}${normalizedText.trim()}`;
     })
     .filter((line): line is string => Boolean(line));
 }
 
-function describeToolOutputQuery(query: MessageFetchQuery) {
+function describeToolOutputQuery(query: MessageFetchQuery, languageCode?: string) {
+  const englishPrompt = isEnglishPrompt(languageCode);
+
   if (query.mode === 'person') {
-    return `按人读取：${query.person.title || query.person.peerId}`;
+    return englishPrompt
+      ? `Search by person: ${query.person.title || query.person.peerId}`
+      : `按人读取：${query.person.title || query.person.peerId}`;
   }
 
   if (query.mode === 'keyword') {
-    return `按关键词读取：${query.keyword.trim()}`;
+    return englishPrompt
+      ? `Search by keyword: ${query.keyword.trim()}`
+      : `按关键词读取：${query.keyword.trim()}`;
   }
 
   if (query.mode === 'range') {
     if (query.timeRange.mode === 'preset') {
-      const presetLabels: Record<'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth', string> = {
-        today: '今天',
-        yesterday: '昨天',
-        thisWeek: '本周',
-        lastWeek: '上周',
-        thisMonth: '本月',
-      };
-
-      return `按时间读取：${presetLabels[query.timeRange.value]}`;
+      return englishPrompt
+        ? `Search by time: ${getPresetRangeLabel(query.timeRange.value, languageCode)}`
+        : `按时间读取：${getPresetRangeLabel(query.timeRange.value, languageCode)}`;
     }
 
-    return '按时间读取：自定义范围';
+    return englishPrompt ? 'Search by time: Custom range' : '按时间读取：自定义范围';
   }
 
-  return `读取最近 ${query.limit} 条消息`;
+  return englishPrompt
+    ? `Read latest ${query.limit} messages`
+    : `读取最近 ${query.limit} 条消息`;
 }
 
-function formatToolOutputSummaryLine(toolOutput: ToolOutput) {
+function formatToolOutputSummaryLine(toolOutput: ToolOutput, languageCode?: string) {
+  const englishPrompt = isEnglishPrompt(languageCode);
   const historyFetchPayload = getHistoryFetchToolPayload(toolOutput);
 
   if (historyFetchPayload) {
-    const querySummary = describeToolOutputQuery(historyFetchPayload.query);
+    const querySummary = describeToolOutputQuery(historyFetchPayload.query, languageCode);
     const resultSummary = [
-      `命中 ${historyFetchPayload.result.total} 条`,
-      historyFetchPayload.result.truncated ? '结果已截断' : '结果完整',
+      englishPrompt ? `Matched ${historyFetchPayload.result.total}` : `命中 ${historyFetchPayload.result.total} 条`,
+      historyFetchPayload.result.truncated
+        ? (englishPrompt ? 'Truncated' : '结果已截断')
+        : (englishPrompt ? 'Complete' : '结果完整'),
     ].join(' · ');
 
     return {
@@ -173,13 +213,13 @@ function formatToolOutputSummaryLine(toolOutput: ToolOutput) {
   if ('description' in toolOutput && toolOutput.description?.trim()) {
     return {
       title: toolOutput.description.trim(),
-      detail: '工具已完成',
+      detail: englishPrompt ? 'Tool completed' : '工具已完成',
     };
   }
 
   return {
     title: toolOutput.type,
-    detail: '工具已完成',
+    detail: englishPrompt ? 'Tool completed' : '工具已完成',
   };
 }
 
@@ -215,13 +255,16 @@ function getHistoryFetchToolPayload(toolOutput: ToolOutput) {
 export function formatAiPromptToolOutputLines(
   toolOutputs: ToolOutput[],
   limit = 4,
+  languageCode?: string,
 ) {
+  const englishPrompt = isEnglishPrompt(languageCode);
+
   return toolOutputs
     .slice(-limit)
     .flatMap((toolOutput) => {
-      const summary = formatToolOutputSummaryLine(toolOutput);
+      const summary = formatToolOutputSummaryLine(toolOutput, languageCode);
       const createdAt = formatAiPromptTimestamp(toolOutput.createdAt);
-      const lines = [`[工具 | ${createdAt}] ${summary.title}`];
+      const lines = [`[${englishPrompt ? 'Tool' : '工具'} | ${createdAt}] ${summary.title}`];
 
       if (summary.detail) {
         lines.push(`- ${summary.detail}`);
@@ -248,15 +291,25 @@ export function buildAiPrompt(
   contextLines: string[],
   conversationContextLines?: string[],
   toolOutputLines: string[] = [],
+  options?: {
+    languageCode?: string;
+  },
 ) {
+  const englishPrompt = isEnglishPrompt(options?.languageCode);
+
   return buildAiTaskPrompt(
-    '回答用户问题',
-    '根据聊天记录直接回答用户问题。',
-    '如果信息足够就直接给结果；如果信息不足就明确说明还缺什么。',
+    englishPrompt ? 'Answer the user question' : '回答用户问题',
+    englishPrompt
+      ? 'Answer the user directly based on chat history.'
+      : '根据聊天记录直接回答用户问题。',
+    englishPrompt
+      ? 'If information is sufficient, give the result directly; otherwise state what is still missing.'
+      : '如果信息足够就直接给结果；如果信息不足就明确说明还缺什么。',
     basePrompt,
     contextLines,
     conversationContextLines || [],
     toolOutputLines,
+    options,
   );
 }
 
@@ -268,9 +321,37 @@ export function buildAiTaskPrompt(
   contextLines: string[] = [],
   conversationContextLines: string[] = [],
   toolOutputLines: string[] = [],
+  options?: {
+    languageCode?: string;
+  },
 ) {
+  const englishPrompt = isEnglishPrompt(options?.languageCode);
   const contextText = contextLines.join('\n');
   const conversationText = conversationContextLines.join('\n');
+
+  if (englishPrompt) {
+    return joinPromptBlocks(
+      [
+        '## Task Prompt',
+        `Current task: ${taskTitle}`,
+        `Objective: ${taskObjective}`,
+        `Output requirements: ${outputRequirements}`,
+        'If information is insufficient, retrieve first; if sufficient, provide the result directly.',
+        'If the user asks for general facts/background and chat history has no direct answer, you may answer from common knowledge, but clearly mark that this part is not from current chat history.',
+        'When you are already in final-answer mode, do not stop at “need to continue retrieval”; either answer directly or clearly state that the chat record alone is insufficient, then add common-knowledge context when applicable.',
+        'Prefer this short template: one-line conclusion first, one line saying whether there is direct chat evidence, and one line saying “this part is not from current chat history” when common/model knowledge is used.',
+        'When retrieval is needed, output structured tool arguments only, not natural-language retrieval instructions.',
+      ],
+      [
+        '## Inputs',
+        userPrompt ? `User question: ${userPrompt}` : undefined,
+        contextText ? `Chat records:\n${contextText}` : undefined,
+        conversationText ? `Conversation context:\n${conversationText}` : undefined,
+        toolOutputLines.length ? `Tool outputs:\n${toolOutputLines.join('\n')}` : undefined,
+      ],
+    );
+  }
+
   return joinPromptBlocks(
     [
       '## Task Prompt',
@@ -298,9 +379,30 @@ export function buildAiFinalAnswerTaskPrompt(
   contextLines: string[] = [],
   conversationContextLines: string[] = [],
   toolOutputLines: string[] = [],
+  options?: {
+    languageCode?: string;
+  },
 ) {
+  const englishPrompt = isEnglishPrompt(options?.languageCode);
   const contextText = contextLines.join('\n');
   const conversationText = conversationContextLines.join('\n');
+
+  if (englishPrompt) {
+    return joinPromptBlocks(
+      [
+        '## Final Answer Task',
+        `User question: ${userPrompt}`,
+        'No more retrieval is allowed at this stage; do not request tool calls again.',
+        'Use this structure: one-line conclusion, one line about whether direct chat evidence exists, and one line saying “this part is not from current chat history” if common/model knowledge is used.',
+      ],
+      [
+        '## Inputs',
+        contextText ? `Chat records:\n${contextText}` : undefined,
+        conversationText ? `Conversation context:\n${conversationText}` : undefined,
+        toolOutputLines.length ? `Existing tool outputs:\n${toolOutputLines.join('\n')}` : undefined,
+      ],
+    );
+  }
 
   return joinPromptBlocks(
     [
@@ -318,42 +420,46 @@ export function buildAiFinalAnswerTaskPrompt(
   );
 }
 
-function describeRawExportQuery(query: MessageFetchQuery) {
+function describeRawExportQuery(query: MessageFetchQuery, languageCode?: string) {
+  const englishPrompt = isEnglishPrompt(languageCode);
+
   if (query.mode === 'person') {
-    return `发言人：${query.person.title || query.person.peerId}`;
+    return englishPrompt
+      ? `Sender: ${query.person.title || query.person.peerId}`
+      : `发言人：${query.person.title || query.person.peerId}`;
   }
 
   if (query.mode === 'keyword') {
-    return `关键词：${query.keyword.trim()}`;
+    return englishPrompt
+      ? `Keyword: ${query.keyword.trim()}`
+      : `关键词：${query.keyword.trim()}`;
   }
 
   if (query.mode === 'range') {
     if (query.timeRange.mode === 'preset') {
-      const presetLabels: Record<'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth', string> = {
-        today: '今天',
-        yesterday: '昨天',
-        thisWeek: '本周',
-        lastWeek: '上周',
-        thisMonth: '本月',
-      };
-
-      return presetLabels[query.timeRange.value];
+      return getPresetRangeLabel(query.timeRange.value, languageCode);
     }
 
-    return '自定义范围';
+    return englishPrompt ? 'Custom range' : '自定义范围';
   }
 
-  return `最近 ${query.limit} 条消息`;
+  return englishPrompt
+    ? `Latest ${query.limit} messages`
+    : `最近 ${query.limit} 条消息`;
 }
 
 export function formatRawMessageExport(
   query: MessageFetchQuery,
   result: MessageFetchResult,
+  languageCode?: string,
 ) {
-  const header = `${describeRawExportQuery(query)}原始消息导出（${result.total} 条）`;
+  const englishPrompt = isEnglishPrompt(languageCode);
+  const header = englishPrompt
+    ? `${describeRawExportQuery(query, languageCode)} raw message export (${result.total})`
+    : `${describeRawExportQuery(query, languageCode)}原始消息导出（${result.total} 条）`;
   const lines = result.messages.map((message) => {
     const timestamp = formatAiPromptTimestamp(message.date);
-    const text = message.text?.trim() || '（无文本）';
+    const text = message.text?.trim() || (englishPrompt ? '(no text)' : '（无文本）');
     return `[${message.messageId} | ${timestamp}] ${message.sender}: ${text}`;
   });
 
@@ -366,8 +472,10 @@ export function formatHistoryFetchPageProgress(
   result: Pick<MessageFetchResult, 'messages' | 'total' | 'truncated' | 'nextBeforeMessageId'>,
   options?: {
     localCount?: number;
+    languageCode?: string;
   },
 ) {
+  const englishPrompt = isEnglishPrompt(options?.languageCode);
   const dates = result.messages.map((message) => message.date).filter(Boolean);
   const minDate = dates.length ? Math.min(...dates) : undefined;
   const maxDate = dates.length ? Math.max(...dates) : undefined;
@@ -378,32 +486,44 @@ export function formatHistoryFetchPageProgress(
   const totalAvailable = localCount + accumulatedCount;
 
   return {
-    title: `第 ${pageIndex} 页`,
+    title: englishPrompt ? `Page ${pageIndex}` : `第 ${pageIndex} 页`,
     detail: [
-      localCount ? `本地 ${localCount} 条` : undefined,
-      `本地新增 ${accumulatedCount} 条`,
-      `累计可用 ${totalAvailable} 条`,
-      `本页 ${result.total} 条`,
+      localCount ? (englishPrompt ? `Local ${localCount}` : `本地 ${localCount} 条`) : undefined,
+      englishPrompt ? `New local ${accumulatedCount}` : `本地新增 ${accumulatedCount} 条`,
+      englishPrompt ? `Total usable ${totalAvailable}` : `累计可用 ${totalAvailable} 条`,
+      englishPrompt ? `This page ${result.total}` : `本页 ${result.total} 条`,
       dateRange,
-      result.nextBeforeMessageId ? `游标 ${result.nextBeforeMessageId}` : '无游标',
-      result.nextBeforeMessageId ? '继续抓取中' : '本轮完成',
-      result.truncated ? '已截断' : '未截断',
+      result.nextBeforeMessageId
+        ? (englishPrompt ? `Cursor ${result.nextBeforeMessageId}` : `游标 ${result.nextBeforeMessageId}`)
+        : (englishPrompt ? 'No cursor' : '无游标'),
+      result.nextBeforeMessageId
+        ? (englishPrompt ? 'Fetching continues' : '继续抓取中')
+        : (englishPrompt ? 'Round completed' : '本轮完成'),
+      result.truncated
+        ? (englishPrompt ? 'Truncated' : '已截断')
+        : (englishPrompt ? 'Not truncated' : '未截断'),
     ].filter(Boolean).join(' · '),
   };
 }
 
-export function formatHistoryFetchFloodWaitProgress(seconds: number) {
+export function formatHistoryFetchFloodWaitProgress(seconds: number, languageCode?: string) {
+  const englishPrompt = isEnglishPrompt(languageCode);
+
   return {
-    title: 'Telegram 限流',
-    detail: `等待 ${seconds} 秒后继续抓取`,
+    title: englishPrompt ? 'Telegram flood wait' : 'Telegram 限流',
+    detail: englishPrompt
+      ? `Wait ${seconds}s before continuing`
+      : `等待 ${seconds} 秒后继续抓取`,
   };
 }
 
 export function buildHistoryFetchFallbackAnswer(
   query: MessageFetchQuery,
   result: MessageFetchResult,
+  languageCode?: string,
 ) {
-  const scopeLabel = describeRawExportQuery(query);
+  const englishPrompt = isEnglishPrompt(languageCode);
+  const scopeLabel = describeRawExportQuery(query, languageCode);
   const messages = result.messages.filter((message) => message.text?.trim());
   const senderCounts = new Map<string, number>();
   const dayCounts = new Map<string, number>();
@@ -417,23 +537,33 @@ export function buildHistoryFetchFallbackAnswer(
   const topSenders = Array.from(senderCounts.entries())
     .sort((left, right) => right[1] - left[1])
     .slice(0, 3)
-    .map(([sender, count]) => `${sender}（${count} 条）`)
-    .join('、');
+    .map(([sender, count]) => (englishPrompt ? `${sender} (${count})` : `${sender}（${count} 条）`))
+    .join(englishPrompt ? ', ' : '、');
 
   const topDays = Array.from(dayCounts.entries())
     .sort((left, right) => right[1] - left[1])
     .slice(0, 3)
-    .map(([day, count]) => `${day}（${count} 条）`)
-    .join('、');
+    .map(([day, count]) => (englishPrompt ? `${day} (${count})` : `${day}（${count} 条）`))
+    .join(englishPrompt ? ', ' : '、');
 
   const exampleLines = messages.slice(0, 5)
     .map((message) => `- [${formatAiPromptTimestamp(message.date)}] ${message.sender}: ${message.text.trim()}`);
 
   return [
-    `已读取${scopeLabel}的聊天记录，共 ${result.total} 条。`,
-    topDays ? `聊天量主要集中在 ${topDays}。` : undefined,
-    topSenders ? `较活跃的发言人有 ${topSenders}（按当前抓到的消息计）。` : undefined,
-    exampleLines.length ? ['先摘几条原话：', ...exampleLines].join('\n') : undefined,
+    englishPrompt
+      ? `Loaded ${scopeLabel} chat records, ${result.total} in total.`
+      : `已读取${scopeLabel}的聊天记录，共 ${result.total} 条。`,
+    topDays
+      ? (englishPrompt ? `Activity is mainly concentrated on ${topDays}.` : `聊天量主要集中在 ${topDays}。`)
+      : undefined,
+    topSenders
+      ? (englishPrompt
+        ? `Most active senders: ${topSenders} (based on currently fetched messages).`
+        : `较活跃的发言人有 ${topSenders}（按当前抓到的消息计）。`)
+      : undefined,
+    exampleLines.length
+      ? [(englishPrompt ? 'A few direct quotes:' : '先摘几条原话：'), ...exampleLines].join('\n')
+      : undefined,
   ].filter(Boolean).join('\n');
 }
 

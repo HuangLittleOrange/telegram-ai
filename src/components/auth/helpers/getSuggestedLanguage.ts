@@ -1,11 +1,23 @@
 import type { LangCode } from '../../../types';
 
 export function getSuggestedLanguage() {
-  let suggestedLanguage = navigator.language.toLowerCase();
+  const normalizedLanguage = navigator.language.toLowerCase();
 
-  if (suggestedLanguage && suggestedLanguage !== 'pt-br') {
-    suggestedLanguage = suggestedLanguage.substr(0, 2);
+  if (normalizedLanguage.startsWith('zh')) {
+    if (
+      normalizedLanguage.includes('hant')
+      || normalizedLanguage.includes('-tw')
+      || normalizedLanguage.includes('-hk')
+    ) {
+      return 'zh-hant' as LangCode;
+    }
+
+    return 'zh-hans' as LangCode;
   }
 
-  return suggestedLanguage as LangCode;
+  if (normalizedLanguage === 'pt-br') {
+    return normalizedLanguage as LangCode;
+  }
+
+  return normalizedLanguage.slice(0, 2) as LangCode;
 }

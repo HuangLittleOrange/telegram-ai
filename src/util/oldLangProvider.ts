@@ -14,6 +14,8 @@ import { createCallbackManager } from './callbacks';
 import { loadAndChangeLanguage } from './localization';
 import { formatInteger } from './textFormat';
 
+import { getLegacySupplementalString } from '../assets/localization/legacyKeyFallbacks';
+
 export interface LangFn {
   (key: string, value?: any, format?: 'i', pluralValue?: number): string;
 
@@ -128,13 +130,17 @@ function createLangFn() {
       }
     }
 
-    const langString = langPack?.[key];
+    const langString = langPack?.[key] || getFallbackLangString(key, value, pluralValue);
     if (!langString) {
       return key;
     }
 
     return processTranslation(langString, key, value, format, pluralValue);
   };
+}
+
+function getFallbackLangString(key: string, value?: any, pluralValue?: number): ApiOldLangString | undefined {
+  return getLegacySupplementalString(key, currentLangCode);
 }
 
 let translationFn: LangFn = createLangFn();

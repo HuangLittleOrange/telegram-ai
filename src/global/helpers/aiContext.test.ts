@@ -64,6 +64,30 @@ describe('ai context helper', () => {
     expect(prompt).toContain('当前时区：Asia/Shanghai');
   });
 
+  it('builds English system prompts when languageCode is English', () => {
+    const prompt = aiContext.buildAiRequestSystemPrompt({
+      now: new Date('2026-04-09T11:38:00+08:00').getTime(),
+      timeZone: 'Asia/Shanghai',
+      languageCode: 'en',
+      syncCoverage: {
+        chatId: '-1001234567890',
+        oldestSyncedDate: new Date('2025-08-05T00:00:00+08:00').getTime(),
+        newestSyncedDate: new Date('2026-04-16T00:00:00+08:00').getTime(),
+        syncedMessages: 65015,
+        totalMessages: 332121,
+      },
+    });
+
+    expect(prompt).toContain('## Identity');
+    expect(prompt).toContain('Current time: 2026-04-09 11:38');
+    expect(prompt).toContain('Current time zone: Asia/Shanghai');
+    expect(prompt).toContain('Current chat: -1001234567890');
+    expect(prompt).toContain('Locally synced date range: 2025-08-05 to 2026-04-16');
+    expect(prompt).toContain('Locally synced messages: 65015 / 332121');
+    expect(prompt).toContain('## Telegram Context');
+    expect(prompt).toContain('focused on Telegram chat history');
+  });
+
   it('only exposes context assembly helpers', () => {
     expect(Object.keys(aiContext)).toEqual(expect.arrayContaining([
       'buildAiFinalAnswerSystemPrompt',

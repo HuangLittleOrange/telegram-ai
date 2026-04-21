@@ -2,7 +2,6 @@ import { useEffect, useState } from '../lib/teact/teact';
 
 import type { RegularLangKey } from '../types/language';
 
-import { LANG_PACK } from '../config';
 import { callApi } from '../api/gramjs';
 import useLastCallback from './useLastCallback';
 
@@ -12,9 +11,8 @@ export default function useLangString(key: RegularLangKey, langCode?: string) {
   const fetchLangString = useLastCallback(async () => {
     if (!langCode) return undefined;
 
-    const result = await callApi('fetchLangStrings', {
+    const result = await callApi('fetchLangStringsBestEffort', {
       langCode,
-      langPack: LANG_PACK,
       keys: [key],
     });
     const langString = result?.strings[key];

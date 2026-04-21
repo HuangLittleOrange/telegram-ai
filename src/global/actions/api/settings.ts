@@ -397,7 +397,7 @@ addActionHandler('updateContactSignUpNotification', async (global, actions, payl
 });
 
 addActionHandler('loadLanguages', async (global): Promise<void> => {
-  const result = await callApi('fetchLanguages');
+  const result = await callApi('fetchLanguagesWithOfficialFallback');
   if (!result) {
     return;
   }

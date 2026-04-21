@@ -1,7 +1,6 @@
 import { Api as GramJs } from '../../../lib/gramjs';
 import { RPCError } from '../../../lib/gramjs/errors';
 
-import type { LANG_PACKS } from '../../../config';
 import type {
   ApiBirthday,
   ApiDisallowedGiftsSettings,
@@ -13,12 +12,14 @@ import type {
   ApiPhoto,
   ApiPrivacyKey,
   ApiUser,
+  LangPackStringValue,
 } from '../../types';
 
 import {
   ACCEPTABLE_USERNAME_ERRORS,
   DEBUG,
   LANG_PACK,
+  LANG_PACKS,
   MUTE_INDEFINITE_TIMESTAMP,
   UNMUTE_TIMESTAMP,
 } from '../../../config';
@@ -428,6 +429,52 @@ export async function fetchLangPack({
   langPack: string;
   langCode: string;
 }) {
+  return fetchLangPackBySource({
+    langPack,
+    langCode,
+  });
+}
+
+function normalizeLangCodeCandidates(langCode: string) {
+  const normalized = langCode.trim().toLowerCase();
+  const aliases: Record<string, string[]> = {
+    zh: ['zh-hans', 'zh-hant'],
+    'zh-cn': ['zh-hans'],
+    'zh-sg': ['zh-hans'],
+    'zh-hans-cn': ['zh-hans'],
+    'zh-hant': ['zh-hant'],
+    'zh-tw': ['zh-hant'],
+    'zh-hk': ['zh-hant'],
+  };
+
+  const candidates = [
+    langCode,
+    ...(aliases[normalized] || []),
+  ];
+
+  const unique = new Set<string>();
+  candidates.forEach((candidate) => {
+    const value = candidate.trim();
+    if (!value) {
+      return;
+    }
+
+    const key = value.toLowerCase();
+    if (!unique.has(key)) {
+      unique.add(key);
+    }
+  });
+
+  return Array.from(unique.values());
+}
+
+async function fetchLangPackBySource({
+  langPack,
+  langCode,
+}: {
+  langPack: string;
+  langCode: string;
+}) {
   const result = await invokeRequest(new GramJs.langpack.GetLangPack({
     langPack,
     langCode,
@@ -442,6 +489,31 @@ export async function fetchLangPack({
     version: result.version,
     strings,
     keysToRemove,
+  };
+}
+
+function mergeLangPackSlices(
+  slices: Array<{ version: number; strings: Record<string, LangPackStringValue>; keysToRemove: string[] }>,
+) {
+  const mergedStrings: Record<string, LangPackStringValue> = {};
+  let version = 0;
+
+  slices.forEach((slice) => {
+    version = Math.max(version, slice.version);
+
+    slice.keysToRemove.forEach((key) => {
+      delete mergedStrings[key];
+    });
+
+    Object.entries(slice.strings).forEach(([key, value]) => {
+      mergedStrings[key] = value;
+    });
+  });
+
+  return {
+    version,
+    strings: mergedStrings,
+    keysToRemove: [] as string[],
   };
 }
 
@@ -473,8 +545,12 @@ export async function fetchLangDifference({
 }
 
 export async function fetchLanguages(): Promise<ApiLanguage[] | undefined> {
+  return fetchLanguagesBySource(LANG_PACK);
+}
+
+async function fetchLanguagesBySource(langPack: string): Promise<ApiLanguage[] | undefined> {
   const result = await invokeRequest(new GramJs.langpack.GetLanguages({
-    langPack: LANG_PACK,
+    langPack,
   }));
   if (!result) {
     return undefined;
@@ -483,7 +559,24 @@ export async function fetchLanguages(): Promise<ApiLanguage[] | undefined> {
   return result.map(buildApiLanguage);
 }
 
+function pickFirstDefined<T>(items: Array<T | undefined>) {
+  return items.find((item): item is T => Boolean(item));
+}
+
 export async function fetchLanguage({
+  langPack,
+  langCode,
+}: {
+  langPack: string;
+  langCode: string;
+}): Promise<ApiLanguage | undefined> {
+  return fetchLanguageBySource({
+    langPack,
+    langCode,
+  });
+}
+
+async function fetchLanguageBySource({
   langPack,
   langCode,
 }: {
@@ -510,6 +603,22 @@ export async function fetchLangStrings({
   langCode: string;
   keys: string[];
 }) {
+  return fetchLangStringsBySource({
+    langPack,
+    langCode,
+    keys,
+  });
+}
+
+async function fetchLangStringsBySource({
+  langPack,
+  langCode,
+  keys,
+}: {
+  langPack: string;
+  langCode: string;
+  keys: string[];
+}) {
   const result = await invokeRequest(new GramJs.langpack.GetStrings({
     langPack,
     langCode,
@@ -520,6 +629,135 @@ export async function fetchLangStrings({
   }
 
   return buildLangStrings(result);
+}
+
+export async function fetchLanguagesWithOfficialFallback(): Promise<ApiLanguage[] | undefined> {
+  const [primaryResult, ...sourceResults] = await Promise.all([
+    fetchLanguagesBySource(LANG_PACK),
+    ...LANG_PACKS.map((langPack) => fetchLanguagesBySource(langPack)),
+  ]);
+  const primary = primaryResult || [];
+
+  const mergedByCode = new Map<string, ApiLanguage>();
+  const push = (language: ApiLanguage) => {
+    const key = language.langCode.toLowerCase();
+    if (!mergedByCode.has(key)) {
+      mergedByCode.set(key, language);
+    }
+  };
+
+  primary.forEach(push);
+  sourceResults
+    .flatMap((item) => item || [])
+    .filter((language) => Boolean(language.isOfficial))
+    .forEach(push);
+
+  if (!mergedByCode.size) {
+    return undefined;
+  }
+
+  return Array.from(mergedByCode.values());
+}
+
+export async function fetchLanguageBestEffort({ langCode }: { langCode: string }) {
+  const candidateCodes = normalizeLangCodeCandidates(langCode);
+
+  for (const candidateCode of candidateCodes) {
+    const primaryLanguage = await fetchLanguageBySource({
+      langPack: LANG_PACK,
+      langCode: candidateCode,
+    });
+    if (primaryLanguage) {
+      return primaryLanguage;
+    }
+
+    const sourceResults = await Promise.all(LANG_PACKS.map((langPack) => fetchLanguageBySource({
+      langPack,
+      langCode: candidateCode,
+    })));
+    const sourceLanguage = pickFirstDefined(sourceResults);
+    if (sourceLanguage) {
+      return sourceLanguage;
+    }
+  }
+
+  return undefined;
+}
+
+export async function fetchLangPackBestEffort({ langCode }: { langCode: string }) {
+  const candidateCodes = normalizeLangCodeCandidates(langCode);
+
+  for (const candidateCode of candidateCodes) {
+    const primary = await fetchLangPackBySource({
+      langPack: LANG_PACK,
+      langCode: candidateCode,
+    });
+    if (primary) {
+      return primary;
+    }
+
+    const sourceSlices = await Promise.all(LANG_PACKS.map((langPack) => fetchLangPackBySource({
+      langPack,
+      langCode: candidateCode,
+    })));
+    const availableSourceSlices = sourceSlices.filter((slice): slice is NonNullable<typeof slice> => Boolean(slice));
+    if (availableSourceSlices.length) {
+      // Keep the same precedence as `oldFetchLangPack`: android overrides iOS/desktop/macos.
+      return mergeLangPackSlices(availableSourceSlices.reverse());
+    }
+  }
+
+  return undefined;
+}
+
+export async function fetchLangStringsBestEffort({
+  langCode,
+  keys,
+}: {
+  langCode: string;
+  keys: string[];
+}) {
+  const candidateCodes = normalizeLangCodeCandidates(langCode);
+
+  for (const candidateCode of candidateCodes) {
+    const mergedStrings: Record<string, LangPackStringValue> = {};
+    const remainingKeys = new Set(keys);
+
+    const mergeResult = (result: { strings: Record<string, LangPackStringValue> } | undefined) => {
+      if (!result) {
+        return;
+      }
+
+      Object.entries(result.strings).forEach(([key, value]) => {
+        mergedStrings[key] = value;
+        remainingKeys.delete(key);
+      });
+    };
+
+    mergeResult(await fetchLangStringsBySource({
+      langPack: LANG_PACK,
+      langCode: candidateCode,
+      keys: Array.from(remainingKeys),
+    }));
+
+    if (remainingKeys.size) {
+      const sourceResults = await Promise.all(LANG_PACKS.map((langPack) => fetchLangStringsBySource({
+        langPack,
+        langCode: candidateCode,
+        keys: Array.from(remainingKeys),
+      })));
+      sourceResults.forEach(mergeResult);
+    }
+
+    if (Object.keys(mergedStrings).length) {
+      return {
+        keysToRemove: [] as string[],
+        strings: mergedStrings,
+      };
+    }
+  }
+
+  return undefined;
 }
 
 export async function oldFetchLangPack({ sourceLangPacks, langCode }: {

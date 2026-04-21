@@ -126,6 +126,7 @@ describe('ui ai action', () => {
         }));
         jest.doMock('../../selectors', () => ({
           selectCurrentMessageList: jest.fn(() => undefined),
+          selectLanguageCode: jest.fn(() => 'zh-hans'),
           selectTabState: jest.fn((global: any, tabId: number) => global.byTabId[tabId]),
           selectViewportIds: jest.fn(() => undefined),
           selectChatMessages: jest.fn(() => ({})),

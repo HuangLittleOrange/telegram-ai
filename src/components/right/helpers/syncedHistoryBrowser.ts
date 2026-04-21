@@ -5,9 +5,8 @@ import type { ThreadId } from '../../../types';
 
 import { getMessageSummaryText } from '../../../global/helpers/messageSummary';
 import { getPeerTitle } from '../../../global/helpers/peers';
-import { searchMessageIdsByKeywordFts } from '../../../global/helpers/sqliteFtsStore';
+import { searchSyncedRecordsByKeyword } from '../../../global/helpers/syncedKeywordSearch';
 import {
-  getSyncedMessagesByIds,
   listSyncedMessageDays,
   querySyncedMessages,
 } from '../../../global/helpers/syncedMessagesStore';
@@ -146,74 +145,34 @@ export async function loadSyncedHistorySearchMessages(args: {
   if (!normalizedKeyword) {
     return [];
   }
+  const lowerKeyword = normalizedKeyword.toLowerCase();
 
-  const mapAndSort = (records: Awaited<ReturnType<typeof getSyncedMessagesByIds>>) => records
-    .map(({ message, messageId, date }) => mapSyncedHistoryMessageItem(global, messageId, date, message))
-    .sort((left, right) => (
-      right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
-    ));
-
-  const filterByKeyword = (items: SyncedHistoryMessageItem[]) => {
-    const lowerKeyword = normalizedKeyword.toLowerCase();
-
-    return items.filter((message) => (
+  const matchesKeyword = (message: SyncedHistoryMessageItem) => {
+    return (
       message.text.toLowerCase().includes(lowerKeyword)
       || message.sender.toLowerCase().includes(lowerKeyword)
       || message.dayKey.toLowerCase().includes(lowerKeyword)
       || message.dayLabel.toLowerCase().includes(lowerKeyword)
       || message.timeText.toLowerCase().includes(lowerKeyword)
-    ));
+    );
   };
 
-  const fallbackScanLimit = Math.min(5000, Math.max(800, maxCount * 8));
-
-  const messageIds = await searchMessageIdsByKeywordFts({
+  const records = await searchSyncedRecordsByKeyword({
     chatId,
     keyword: normalizedKeyword,
     threadId,
-    startSec: timeRange?.startSec,
-    endSec: timeRange?.endSec,
-    limit: maxCount,
-  });
-
-  if (messageIds?.length) {
-    const records = await getSyncedMessagesByIds(chatId, messageIds);
-    const mappedFromFts = mapAndSort(records);
-    const shouldFallback = records.length < Math.min(messageIds.length, maxCount);
-
-    if (!shouldFallback) {
-      return mappedFromFts.slice(0, maxCount);
-    }
-
-    const fallbackRecords = await querySyncedMessages({
-      chatId,
-      threadId,
-      timeRange,
-      maxCount: fallbackScanLimit,
-    });
-    const fallbackMapped = filterByKeyword(mapAndSort(fallbackRecords));
-
-    if (!mappedFromFts.length) {
-      return fallbackMapped.slice(0, maxCount);
-    }
-
-    const mergedById = new Map<number, SyncedHistoryMessageItem>();
-    mappedFromFts.forEach((item) => mergedById.set(item.messageId, item));
-    fallbackMapped.forEach((item) => mergedById.set(item.messageId, item));
-
-    return Array.from(mergedById.values())
-      .sort((left, right) => (
-        right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
-      ))
-      .slice(0, maxCount);
-  }
-
-  const records = await querySyncedMessages({
-    chatId,
-    threadId,
     timeRange,
-    maxCount: fallbackScanLimit,
+    maxCount,
+    filterFallbackRecord: (record) => {
+      const item = mapSyncedHistoryMessageItem(global, record.messageId, record.date, record.message);
+      return matchesKeyword(item);
+    },
   });
 
-  return filterByKeyword(mapAndSort(records)).slice(0, maxCount);
+  return records
+    .map(({ message, messageId, date }) => mapSyncedHistoryMessageItem(global, messageId, date, message))
+    .sort((left, right) => (
+      right.date !== left.date ? right.date - left.date : right.messageId - left.messageId
+    ))
+    .slice(0, maxCount);
 }

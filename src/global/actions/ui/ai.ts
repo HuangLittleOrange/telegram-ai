@@ -1,7 +1,10 @@
+/* eslint-disable @stylistic/max-len */
+
 import type { ThreadId } from '../../../types';
 import type { ActionReturnType, GlobalState, RequiredGlobalState } from '../../types';
 import type { AiStreamEvent, AiStreamStage } from '../../types/aiStream';
 import type {
+  MessageFetchQuery,
   MessageFetchResult,
   ToolOutput,
 } from '../../types/tabState';
@@ -25,6 +28,7 @@ import {
 import {
   buildAiRequestSystemPrompt,
 } from '../../helpers/aiContext';
+import { resolveAiPromptLocale } from '../../helpers/aiLanguage';
 import { persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence';
 import {
   buildHistoryFetchToolDefinition,
@@ -73,26 +77,58 @@ import {
 import { updateTabState } from '../../reducers/tabs';
 import {
   selectCurrentMessageList,
+  selectLanguageCode,
   selectTabState,
 } from '../../selectors';
 
-const QUICK_PROMPTS = {
-  summaryToday: buildAiTaskPrompt(
-    '整理今天聊天记录',
-    '先读取今天相关的聊天记录，提炼关键结论、重要讨论点、未完成事项，以及如果信息还不够时应该继续补看的内容。',
-    '用简体中文输出，短句优先；先给结果，再补充必要依据；如果适合，给出可以直接发到群里的总结。',
-  ),
-  replySuggestions: buildAiTaskPrompt(
-    '生成回复草稿',
-    '先读取当前聊天上下文，再根据用户的问题生成 3 条可以直接发送的回复建议，分别覆盖确认、追问和推进。',
-    '每条控制在一句到两句，贴近 Telegram 群聊语气；如果上下文不足，先说明还需要哪些聊天记录。',
-  ),
-  extractTodos: buildAiTaskPrompt(
-    '整理待办',
-    '先读取最近聊天记录，提取待办事项、负责人、截止时间和状态。',
-    '按要点列出；信息不足时标出缺失项，并说明还需要继续补看的聊天记录。',
-  ),
-};
+function getQuickPrompts(languageCode?: string) {
+  const isEnglish = resolveAiPromptLocale(languageCode) === 'en';
+
+  return {
+    summaryToday: buildAiTaskPrompt(
+      isEnglish ? 'Summarize today chat records' : '整理今天聊天记录',
+      isEnglish
+        ? 'Read today chat records first, then extract key conclusions, important discussion points, unfinished items, and what should be reviewed next when context is still insufficient.'
+        : '先读取今天相关的聊天记录，提炼关键结论、重要讨论点、未完成事项，以及如果信息还不够时应该继续补看的内容。',
+      isEnglish
+        ? 'Use concise output with short sentences. Put results first, then essential evidence. If suitable, provide a directly sendable group summary.'
+        : '用简体中文输出，短句优先；先给结果，再补充必要依据；如果适合，给出可以直接发到群里的总结。',
+      undefined,
+      [],
+      [],
+      [],
+      { languageCode },
+    ),
+    replySuggestions: buildAiTaskPrompt(
+      isEnglish ? 'Generate reply drafts' : '生成回复草稿',
+      isEnglish
+        ? 'Read current chat context first, then produce 3 directly sendable reply suggestions that cover confirmation, follow-up question, and push-forward.'
+        : '先读取当前聊天上下文，再根据用户的问题生成 3 条可以直接发送的回复建议，分别覆盖确认、追问和推进。',
+      isEnglish
+        ? 'Keep each suggestion to one or two sentences in Telegram group tone. If context is insufficient, first state what chat records are still needed.'
+        : '每条控制在一句到两句，贴近 Telegram 群聊语气；如果上下文不足，先说明还需要哪些聊天记录。',
+      undefined,
+      [],
+      [],
+      [],
+      { languageCode },
+    ),
+    extractTodos: buildAiTaskPrompt(
+      isEnglish ? 'Extract todo items' : '整理待办',
+      isEnglish
+        ? 'Read recent chat records first, then extract todo items, owners, due dates, and statuses.'
+        : '先读取最近聊天记录，提取待办事项、负责人、截止时间和状态。',
+      isEnglish
+        ? 'Use bullet points. If information is insufficient, mark missing fields and specify what records should be reviewed next.'
+        : '按要点列出；信息不足时标出缺失项，并说明还需要继续补看的聊天记录。',
+      undefined,
+      [],
+      [],
+      [],
+      { languageCode },
+    ),
+  };
+}
 
 const MAX_AI_TOOL_OUTPUTS = 8;
 const MAX_PERSISTED_AI_ASSISTANT_SESSIONS = 120;
@@ -104,11 +140,43 @@ type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
 type AiStreamEventInput = AiStreamEvent extends infer Event
   ? Event extends { runId: string; createdAt: number }
-  ? Omit<Event, 'runId' | 'createdAt'>
-  : never
+    ? Omit<Event, 'runId' | 'createdAt'>
+    : never
   : never;
 
 const EMPTY_AI_ASSISTANT_STATE = createEmptyAiAssistantState();
+
+function describeMessageFetchQueryForUi(query: MessageFetchQuery, languageCode?: string) {
+  if (resolveAiPromptLocale(languageCode) !== 'en') {
+    return describeMessageFetchQuery(query);
+  }
+
+  if (query.mode === 'person') {
+    return `Read by person: ${query.person.title || query.person.peerId}`;
+  }
+
+  if (query.mode === 'keyword') {
+    return `Read by keyword: ${query.keyword.trim()}`;
+  }
+
+  if (query.mode === 'range') {
+    if (query.timeRange.mode === 'preset') {
+      const presetLabels = {
+        today: 'today',
+        yesterday: 'yesterday',
+        thisWeek: 'this week',
+        lastWeek: 'last week',
+        thisMonth: 'this month',
+      } as const;
+
+      return `Read by time: ${presetLabels[query.timeRange.value]}`;
+    }
+
+    return 'Read by time: custom range';
+  }
+
+  return `Read latest ${query.limit} messages`;
+}
 
 type AiAssistantSessionScope = {
   chatId?: string;
@@ -393,6 +461,7 @@ async function requestAiCompletion(
     systemPrompt?: string;
     temperature?: number;
     stream?: boolean;
+    languageCode?: string;
     signal?: AbortSignal;
   },
 ): Promise<string | ReadableStreamDefaultReader<Uint8Array>> {
@@ -480,7 +549,7 @@ async function requestAiCompletion(
       signal: options?.signal,
       body: JSON.stringify({
         model,
-        system: options?.systemPrompt || buildAiRequestSystemPrompt(),
+        system: options?.systemPrompt || buildAiRequestSystemPrompt({ languageCode: options?.languageCode }),
         messages: [
           { role: 'user', content: prompt },
         ],
@@ -515,7 +584,10 @@ async function requestAiCompletion(
     body: JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: options?.systemPrompt || buildAiRequestSystemPrompt() },
+        {
+          role: 'system',
+          content: options?.systemPrompt || buildAiRequestSystemPrompt({ languageCode: options?.languageCode }),
+        },
         { role: 'user', content: prompt },
       ],
       temperature: options?.temperature ?? 0.4,
@@ -1172,17 +1244,23 @@ addActionHandler('hydrateAiAssistantSession', (global, actions, payload): Action
 
 addActionHandler('requestAiSummaryToday', (global, actions, payload): ActionReturnType => {
   const { tabId = getCurrentTabId() } = payload || {};
-  actions.requestAiPrompt({ prompt: QUICK_PROMPTS.summaryToday, tabId });
+  const languageCode = selectLanguageCode(global);
+  const quickPrompts = getQuickPrompts(languageCode);
+  actions.requestAiPrompt({ prompt: quickPrompts.summaryToday, tabId });
 });
 
 addActionHandler('requestAiReplySuggestions', (global, actions, payload): ActionReturnType => {
   const { tabId = getCurrentTabId() } = payload || {};
-  actions.requestAiPrompt({ prompt: QUICK_PROMPTS.replySuggestions, tabId });
+  const languageCode = selectLanguageCode(global);
+  const quickPrompts = getQuickPrompts(languageCode);
+  actions.requestAiPrompt({ prompt: quickPrompts.replySuggestions, tabId });
 });
 
 addActionHandler('requestAiExtractTodos', (global, actions, payload): ActionReturnType => {
   const { tabId = getCurrentTabId() } = payload || {};
-  actions.requestAiPrompt({ prompt: QUICK_PROMPTS.extractTodos, tabId });
+  const languageCode = selectLanguageCode(global);
+  const quickPrompts = getQuickPrompts(languageCode);
+  actions.requestAiPrompt({ prompt: quickPrompts.extractTodos, tabId });
 });
 
 addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<void> => {
@@ -1191,6 +1269,8 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
   if (!trimmedPrompt) {
     return;
   }
+  const languageCode = selectLanguageCode(global);
+  const isEnglishPrompt = resolveAiPromptLocale(languageCode) === 'en';
 
   const run = aiRunController.startRun(tabId);
   const { runId } = run;
@@ -1226,7 +1306,13 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
   emitEvent({ type: 'run.started' });
   actions.appendAiTurn({ role: 'user', text: trimmedPrompt, tabId });
-  emitThinking('answer', '正在理解你的问题', '先直接回答你的问题，必要时再检索历史消息');
+  emitThinking(
+    'answer',
+    isEnglishPrompt ? 'Understanding your request' : '正在理解你的问题',
+    isEnglishPrompt
+      ? 'I will answer directly first, and retrieve history only when necessary.'
+      : '先直接回答你的问题，必要时再检索历史消息',
+  );
 
   global = getGlobal();
   const tabState = selectTabState(global, tabId);
@@ -1265,6 +1351,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       ? global.chatSync.byChatId[currentChatId]
       : undefined;
     const requestSystemPrompt = buildAiRequestSystemPrompt({
+      languageCode,
       syncCoverage: currentChatId ? {
         chatId: currentChatId,
         oldestSyncedDate: currentChatSyncState?.oldestSyncedDate,
@@ -1281,9 +1368,10 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     const toolOutputContextLines = formatAiPromptToolOutputLines(
       aiAssistant.toolOutputHistory || [],
       4,
+      languageCode,
     );
     let collectedToolOutputs = [...(aiAssistant.toolOutputHistory || [])];
-    const conversationContextLines = formatAiPromptConversationContextLines(aiAssistant.turns, 6);
+    const conversationContextLines = formatAiPromptConversationContextLines(aiAssistant.turns, 6, languageCode);
     const isFirstConversationTurn = !(aiAssistant.turns || []).some((turn) => turn.role === 'assistant');
     const conversationTurns = resolveAiConversationTurnsForRequest({
       isFirstConversationTurn,
@@ -1300,6 +1388,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       toolOutputLines: toolOutputContextLines,
       turns: conversationTurns,
       currentPrompt: trimmedPrompt,
+      languageCode,
     });
 
     const commitFinalAnswer = (
@@ -1331,7 +1420,11 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     let finalAnswerText: string | undefined;
     let fallbackFinalText: string | undefined;
 
-    emitThinking('answer', '正在生成回答', '若信息不足会按需检索历史消息');
+    emitThinking(
+      'answer',
+      isEnglishPrompt ? 'Generating answer' : '正在生成回答',
+      isEnglishPrompt ? 'If needed, I will retrieve additional history messages.' : '若信息不足会按需检索历史消息',
+    );
 
     if (provider === 'openai') {
       let fetchedCount = 0;
@@ -1354,7 +1447,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             emitEvent({
               type: 'thinking.trace',
               stage: 'answer',
-              title: '模型思考中',
+              title: isEnglishPrompt ? 'Model thinking' : '模型思考中',
               detail,
             });
           };
@@ -1404,14 +1497,23 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
             userPrompt: trimmedPrompt,
             defaultLimit: Math.min(100, Math.max(aiAssistant.contextLimit, 20)),
             onQueryStart: (resolvedQuery) => {
-              const queryTitle = `正在${describeMessageFetchQuery(resolvedQuery)}`;
-              emitThinking('retriever', queryTitle, '在当前聊天和历史记录中查找相关消息');
+              const queryDescription = describeMessageFetchQueryForUi(resolvedQuery, languageCode);
+              const queryTitle = isEnglishPrompt ? `Searching: ${queryDescription}` : `正在${queryDescription}`;
+              emitThinking(
+                'retriever',
+                queryTitle,
+                isEnglishPrompt
+                  ? 'Searching relevant messages in the current chat and local history.'
+                  : '在当前聊天和历史记录中查找相关消息',
+              );
               emitEvent({
                 type: 'retriever.query',
                 title: queryTitle,
                 detail: localEvidence.length
-                  ? `本地先命中 ${localEvidence.length} 条，开始读取本地索引历史`
-                  : describeMessageFetchQuery(resolvedQuery),
+                  ? (isEnglishPrompt
+                    ? `Local hits first: ${localEvidence.length}. Continue reading local indexed history.`
+                    : `本地先命中 ${localEvidence.length} 条，开始读取本地索引历史`)
+                  : queryDescription,
               });
             },
             executeQuery: async ({ query: nextQuery }) => {
@@ -1444,18 +1546,22 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
           fallbackResult = result;
           emitEvent({
             type: 'retriever.result',
-            title: `已找到 ${fetched.length} 条相关消息`,
+            title: isEnglishPrompt ? `Found ${fetched.length} relevant messages` : `已找到 ${fetched.length} 条相关消息`,
             detail: [
-              `本地 ${localEvidence.length} 条`,
-              `本地新增 ${fetched.length} 条`,
-              `累计可用 ${localEvidence.length + fetched.length} 条`,
-              result.truncated ? '结果已截断' : '结果完整',
+              isEnglishPrompt ? `Local ${localEvidence.length}` : `本地 ${localEvidence.length} 条`,
+              isEnglishPrompt ? `New local ${fetched.length}` : `本地新增 ${fetched.length} 条`,
+              isEnglishPrompt
+                ? `Total usable ${localEvidence.length + fetched.length}`
+                : `累计可用 ${localEvidence.length + fetched.length} 条`,
+              result.truncated
+                ? (isEnglishPrompt ? 'Truncated' : '结果已截断')
+                : (isEnglishPrompt ? 'Complete' : '结果完整'),
             ].join(' · '),
           });
           emitEvent({
             type: 'tool.output',
             toolType: 'history-fetch',
-            description: describeMessageFetchQuery(query),
+            description: describeMessageFetchQueryForUi(query, languageCode),
             payload: {
               query,
               result,
@@ -1472,8 +1578,14 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
         maxSteps: 20,
       }).catch((error) => {
         if (fallbackQuery && fallbackResult) {
-          emitThinking('answer', '正在整理任务结果', '模型未完成回答，改用历史结果兜底输出');
-          fallbackFinalText = buildHistoryFetchFallbackAnswer(fallbackQuery, fallbackResult);
+          emitThinking(
+            'answer',
+            isEnglishPrompt ? 'Finalizing fallback result' : '正在整理任务结果',
+            isEnglishPrompt
+              ? 'Model answer was incomplete; using fetched history as fallback output.'
+              : '模型未完成回答，改用历史结果兜底输出',
+          );
+          fallbackFinalText = buildHistoryFetchFallbackAnswer(fallbackQuery, fallbackResult, languageCode);
           return undefined;
         }
 
@@ -1487,13 +1599,18 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       actualUsedCount = localEvidence.length + fetchedCount;
     } else {
       const fullPrompt = buildAiTaskPrompt(
-        '回答用户问题',
-        '根据聊天记录直接回答用户问题。',
-        '如果信息足够就直接给结果；如果信息不足就明确说明还缺什么。',
+        isEnglishPrompt ? 'Answer user question' : '回答用户问题',
+        isEnglishPrompt
+          ? 'Answer the user directly based on chat history.'
+          : '根据聊天记录直接回答用户问题。',
+        isEnglishPrompt
+          ? 'If information is sufficient, provide the answer directly; otherwise explain what is missing.'
+          : '如果信息足够就直接给结果；如果信息不足就明确说明还缺什么。',
         trimmedPrompt,
         contextEvidenceLines,
         conversationContextLines,
-        formatAiPromptToolOutputLines(collectedToolOutputs, 4),
+        formatAiPromptToolOutputLines(collectedToolOutputs, 4, languageCode),
+        { languageCode },
       );
       const responseText = await requestAiCompletion(
         provider,
@@ -1504,6 +1621,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
         {
           systemPrompt: requestSystemPrompt,
           temperature: 0.3,
+          languageCode,
           signal,
         },
       ) as string;
@@ -1521,7 +1639,11 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
       throw new Error('AI returned no visible answer.');
     }
 
-    emitThinking('answer', '正在生成最终回答', '开始整理结果');
+    emitThinking(
+      'answer',
+      isEnglishPrompt ? 'Generating final answer' : '正在生成最终回答',
+      isEnglishPrompt ? 'Finalizing the result now.' : '开始整理结果',
+    );
     commitFinalAnswer(finalAnswerText, historyMessageSource, actualUsedCount);
     emitEvent({
       type: 'answer.final',
@@ -1574,20 +1696,23 @@ addActionHandler('cancelAiPrompt', (global, actions, payload): ActionReturnType 
 
 addActionHandler('requestAiMessageFetch', async (global, actions, payload): Promise<void> => {
   const { query, tabId = getCurrentTabId() } = payload;
+  const languageCode = selectLanguageCode(global);
+  const isEnglishPrompt = resolveAiPromptLocale(languageCode) === 'en';
+  const queryDescription = describeMessageFetchQueryForUi(query, languageCode);
 
   actions.setAiError({ error: undefined, tabId });
   actions.setAiLoading({ isLoading: true, tabId });
   actions.clearAiThinkingTrace({ tabId });
   actions.setAiThinkingStartedAt({ thinkingStartedAt: Date.now(), tabId });
   actions.setAiThinkingStage({
-    thinkingStage: describeMessageFetchQuery(query),
+    thinkingStage: queryDescription,
     tabId,
   });
   actions.appendAiThinkingTrace({
     trace: {
       stage: 'retriever',
-      title: '正在抓取消息',
-      detail: describeMessageFetchQuery(query),
+      title: isEnglishPrompt ? 'Fetching messages' : '正在抓取消息',
+      detail: queryDescription,
     },
     tabId,
   });
@@ -1622,14 +1747,20 @@ addActionHandler('requestAiMessageFetch', async (global, actions, payload): Prom
     actions.appendAiThinkingTrace({
       trace: {
         stage: 'summary',
-        title: `已获取 ${result.total} 条消息`,
-        detail: [`本地新增 ${result.total} 条`, '已写入本地缓存', result.truncated ? '结果已截断' : '结果完整'].join(' · '),
+        title: isEnglishPrompt ? `Fetched ${result.total} messages` : `已获取 ${result.total} 条消息`,
+        detail: [
+          isEnglishPrompt ? `New local ${result.total}` : `本地新增 ${result.total} 条`,
+          isEnglishPrompt ? 'Saved to local cache' : '已写入本地缓存',
+          result.truncated
+            ? (isEnglishPrompt ? 'Truncated' : '结果已截断')
+            : (isEnglishPrompt ? 'Complete' : '结果完整'),
+        ].join(' · '),
       },
       tabId,
     });
   } catch (err: any) {
     actions.setAiError({
-      error: err?.message || '消息检索失败，请稍后重试。',
+      error: err?.message || (isEnglishPrompt ? 'Message retrieval failed. Please try again later.' : '消息检索失败，请稍后重试。'),
       tabId,
     });
   } finally {
