@@ -67,6 +67,10 @@ addActionHandler('init', (global, actions, payload): ActionReturnType => {
     };
 
     debugWindow.TEST_getCurrentTabId = getCurrentTabId;
+    debugWindow.TEST_getAiSettings = () => {
+      const globalState = getGlobal();
+      return globalState.settings.byKey.aiSettings;
+    };
     debugWindow.TEST_getCurrentMessageList = (localTabId?: number) => {
       const globalState = getGlobal();
       return selectCurrentMessageList(globalState, localTabId ?? getCurrentTabId());
@@ -81,6 +85,24 @@ addActionHandler('init', (global, actions, payload): ActionReturnType => {
 
       if (!chat) {
         throw new Error(`Chat not found by title: ${title}`);
+      }
+
+      const targetTabId = localTabId ?? getCurrentTabId();
+      actions.openChat({ id: chat.id, tabId: targetTabId });
+      return chat.id;
+    };
+
+    debugWindow.TEST_openChatById = (chatId: string, localTabId?: number) => {
+      const normalizedChatId = String(chatId || '').trim();
+      if (!normalizedChatId) {
+        throw new Error('Chat id is required');
+      }
+
+      const globalState = getGlobal();
+      const chat = selectChat(globalState, normalizedChatId);
+
+      if (!chat) {
+        throw new Error(`Chat not found by id: ${normalizedChatId}`);
       }
 
       const targetTabId = localTabId ?? getCurrentTabId();

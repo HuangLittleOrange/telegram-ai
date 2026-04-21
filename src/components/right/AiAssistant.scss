@@ -848,6 +848,20 @@
       border-bottom: 1px solid rgba(var(--color-text-secondary-rgb), 0.08);
     }
 
+    &.is-error {
+      margin: 0 0.5rem 1.125rem;
+      padding: 0.6875rem 0.8125rem;
+      border: 1px solid color-mix(in srgb, var(--color-error) 32%, transparent);
+      border-bottom: 0;
+      border-radius: 0.875rem;
+
+      background: color-mix(in srgb, var(--color-error) 11%, transparent);
+
+      .AiAssistant__message-text {
+        color: color-mix(in srgb, var(--color-error) 84%, var(--color-text));
+      }
+    }
+
     &.is-live {
       gap: 0.5625rem;
 

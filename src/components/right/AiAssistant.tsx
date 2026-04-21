@@ -899,7 +899,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     }
   });
 
-  const hasTurns = turns.length > 0;
+  const hasTurns = turns.length > 0 || Boolean(visibleError);
   const liveDraftAnimatedText = hasLiveDraft && isStreaming
     ? liveDraftText.slice(0, liveDraftVisibleLength)
     : liveDraftText;
@@ -1502,8 +1502,6 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         </div>
       )}
 
-      {visibleError && <div className="AiAssistant__error">{visibleError}</div>}
-
       <div className="AiAssistant__body">
         <div className="AiAssistant__messages custom-scroll">
           {turns.map((turn, index) => (
@@ -1532,6 +1530,13 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
               );
             })()
           ))}
+          {visibleError && (
+            <div className="AiAssistant__message is-assistant is-error">
+              <div className="AiAssistant__message-text allow-selection">
+                {visibleError}
+              </div>
+            </div>
+          )}
           {hasLiveRun && (
             <div className="AiAssistant__liveRun AiAssistant__message is-assistant is-live">
               <div className="AiAssistant__liveRunHeader">

@@ -104,8 +104,8 @@ type SupportedAiProvider = 'openai' | 'anthropic' | 'gemini';
 
 type AiStreamEventInput = AiStreamEvent extends infer Event
   ? Event extends { runId: string; createdAt: number }
-    ? Omit<Event, 'runId' | 'createdAt'>
-    : never
+  ? Omit<Event, 'runId' | 'createdAt'>
+  : never
   : never;
 
 const EMPTY_AI_ASSISTANT_STATE = createEmptyAiAssistantState();
