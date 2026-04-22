@@ -196,6 +196,7 @@ export type AiAssistantTurn = {
   role: 'user' | 'assistant';
   text: string;
   createdAt: number;
+  attachedMessageCount?: number;
   thinkingLog?: {
     startedAt: number;
     endedAt?: number;
@@ -211,6 +212,13 @@ export type AiAssistantTurn = {
 export type AiAssistantState = {
   isOpen: boolean;
   contextLimit: number;
+  selectionContext?: {
+    source: 'message-selection';
+    chatId: string;
+    threadId: ThreadId;
+    messageIds: number[];
+    createdAt: number;
+  };
   turns: AiAssistantTurn[];
   historyMessages: {
     role: 'system' | 'user' | 'assistant' | 'tool';

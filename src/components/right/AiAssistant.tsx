@@ -14,6 +14,7 @@ import type { ApiChat } from '../../api/types';
 import type { ChatSyncState } from '../../global/types';
 import type {
   AiAssistantStreamStatus,
+  AiAssistantTurn,
   ToolOutput,
 } from '../../global/types/tabState';
 import type { ThreadId } from '../../types';
@@ -65,16 +66,7 @@ type OwnProps = {
 type StateProps = {
   chat?: ApiChat;
   syncState: ChatSyncState;
-  turns: {
-    role: 'user' | 'assistant';
-    text: string;
-    createdAt: number;
-    thinkingLog?: {
-      startedAt: number;
-      endedAt?: number;
-      steps: AiThinkingTraceStep[];
-    };
-  }[];
+  turns: AiAssistantTurn[];
   isLoading?: boolean;
   streamStatus?: AiAssistantStreamStatus;
   activeStage?: AiThinkingTraceStep['stage'];
@@ -92,6 +84,13 @@ type StateProps = {
   }[];
   error?: string;
   hasAiConfig: boolean;
+  selectionContext?: {
+    source: 'message-selection';
+    chatId: string;
+    threadId: ThreadId;
+    messageIds: number[];
+    createdAt: number;
+  };
 };
 
 const DEFAULT_SYNC_RANGE_DAYS = 30;
@@ -375,9 +374,11 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   thinkingTrace = [],
   error,
   hasAiConfig,
+  selectionContext,
   isActive,
 }) => {
   const {
+    clearAiSelectionContext,
     openSettingsScreen,
     requestAiExtractTodos,
     cancelAiPrompt,
@@ -1523,6 +1524,11 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                       keyId: `${turn.createdAt}_${index}`,
                     })
                   )}
+                  {Boolean(turn.role === 'user' && turn.attachedMessageCount) && (
+                    <div className="AiAssistant__message-attachment">
+                      {`已附加 ${turn.attachedMessageCount} 条消息`}
+                    </div>
+                  )}
                   <div className="AiAssistant__message-text allow-selection">
                     {turn.role === 'assistant' ? renderAssistantContent(normalizedText) : normalizedText}
                   </div>
@@ -1680,6 +1686,22 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
 
       <div className="AiAssistant__composer-shell">
         <div className="AiAssistant__composer-bar">
+          {selectionContext && (
+            <div className="AiAssistant__selectionContext">
+              <div className="AiAssistant__selectionContextCopy">
+                <div className="AiAssistant__selectionContextTitle">
+                  {`已附加 ${selectionContext.messageIds.length} 条消息`}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="AiAssistant__selectionContextAction"
+                onClick={() => clearAiSelectionContext()}
+              >
+                清除
+              </button>
+            </div>
+          )}
           <div className="AiAssistant__composer-row">
             <TextArea
               className="AiAssistant__composer-input"
@@ -1726,6 +1748,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
 export default memo(withGlobal<OwnProps>(
   (global, { chatId }): Complete<StateProps> => {
     const tabState = selectTabState(global);
+    const chat = selectChat(global, chatId);
     const {
       turns,
       isLoading,
@@ -1739,6 +1762,7 @@ export default memo(withGlobal<OwnProps>(
       thinkingEndedAt,
       thinkingTrace,
       error,
+      selectionContext,
     } = tabState.aiAssistant;
 
     const aiSettings = global.settings.byKey.aiSettings;
@@ -1749,7 +1773,7 @@ export default memo(withGlobal<OwnProps>(
     );
 
     return {
-      chat: selectChat(global, chatId),
+      chat,
       syncState: global.chatSync.byChatId[chatId] || DEFAULT_SYNC_STATE,
       turns,
       isLoading,
@@ -1764,6 +1788,7 @@ export default memo(withGlobal<OwnProps>(
       thinkingTrace,
       error,
       hasAiConfig,
+      selectionContext,
     };
   },
 )(AiAssistant));

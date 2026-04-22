@@ -387,6 +387,8 @@ export interface ActionPayloads {
 
   toggleChatInfo: ({ force?: boolean } & WithTabId) | undefined;
   toggleAiAssistant: ({ force?: boolean } & WithTabId) | undefined;
+  openAiAssistantWithSelectedMessages: WithTabId | undefined;
+  clearAiSelectionContext: WithTabId | undefined;
   setAiContextLimit: {
     contextLimit: number;
   } & WithTabId;
@@ -417,6 +419,7 @@ export interface ActionPayloads {
     role: 'user' | 'assistant';
     text: string;
     createdAt?: number;
+    attachedMessageCount?: number;
     thinkingLog?: AiThinkingLog;
   } & WithTabId;
   requestAiPrompt: {

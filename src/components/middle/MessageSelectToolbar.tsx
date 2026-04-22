@@ -74,6 +74,7 @@ const MessageSelectToolbar: FC<OwnProps & StateProps> = ({
   const {
     exitMessageSelectMode,
     openForwardMenuForSelectedMessages,
+    openAiAssistantWithSelectedMessages,
     downloadSelectedMessages,
     copySelectedMessages,
     showNotification,
@@ -200,6 +201,9 @@ const MessageSelectToolbar: FC<OwnProps & StateProps> = ({
 
           {Boolean(selectedMessagesCount) && (
             <div className="MessageSelectToolbar-actions">
+              {messageListType !== 'scheduled' && (
+                renderButton('bots', 'AI Assistant', openAiAssistantWithSelectedMessages)
+              )}
               {messageListType !== 'scheduled' && canForwardMessages && (
                 renderButton(
                   'forward', lang('Chat.ForwardActionHeader'), openForwardMenuForSelectedMessages,

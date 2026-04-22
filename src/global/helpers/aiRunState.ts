@@ -62,7 +62,7 @@ export function createEmptyAiAssistantState(
 }
 
 export function resetAiAssistantState(
-  state: Pick<AiAssistantState, 'contextLimit' | 'isOpen'>,
+  state: Pick<AiAssistantState, 'contextLimit' | 'isOpen' | 'selectionContext'>,
 ): AiAssistantState {
   return {
     ...createEmptyAiAssistantState(state.contextLimit),

@@ -33,7 +33,10 @@ import { persistFetchedRangeCoverage } from '../../helpers/aiMessagePersistence'
 import {
   buildHistoryFetchToolDefinition,
 } from '../../helpers/aiSkills';
+import { getMessageSummaryText } from '../../helpers/messageSummary';
+import { getPeerTitle } from '../../helpers/peers';
 export { buildHistoryFetchQueryFromToolHints } from '../../helpers/aiSkills';
+import { getTranslationFn } from '../../../util/localization';
 import {
   type AiChatMessage,
   type AiToolCall,
@@ -76,8 +79,10 @@ import {
 } from '../../index';
 import { updateTabState } from '../../reducers/tabs';
 import {
+  selectChatMessage,
   selectCurrentMessageList,
   selectLanguageCode,
+  selectSender,
   selectTabState,
 } from '../../selectors';
 
@@ -329,6 +334,7 @@ function buildAiAssistantStateFromSession(
   return {
     ...createEmptyAiAssistantState(contextLimit),
     isOpen: currentAiAssistant.isOpen,
+    selectionContext: currentAiAssistant.selectionContext,
     turns: session?.turns || [],
     historyMessages: session?.historyMessages || [],
     toolOutputHistory: session?.toolOutputHistory || [],
@@ -376,6 +382,74 @@ function updateAiState(
   }
 
   return nextGlobal;
+}
+
+function sortMessageIdsChronologically(
+  global: GlobalState,
+  chatId: string,
+  messageIds: number[],
+) {
+  return [...messageIds].sort((leftId, rightId) => {
+    const leftMessage = selectChatMessage(global, chatId, leftId);
+    const rightMessage = selectChatMessage(global, chatId, rightId);
+    const leftDate = leftMessage?.date || 0;
+    const rightDate = rightMessage?.date || 0;
+
+    if (leftDate !== rightDate) {
+      return leftDate - rightDate;
+    }
+
+    return leftId - rightId;
+  });
+}
+
+function buildSelectedMessageEvidenceLines(
+  global: GlobalState,
+  aiAssistant: ReturnType<typeof createEmptyAiAssistantState>,
+) {
+  const selectionContext = aiAssistant.selectionContext;
+  if (!selectionContext?.messageIds.length) {
+    return [];
+  }
+
+  const lang = getTranslationFn();
+
+  const items = selectionContext.messageIds
+    .map((messageId) => {
+      const message = selectChatMessage(global, selectionContext.chatId, messageId);
+      if (!message) {
+        return undefined;
+      }
+
+      const sender = selectSender(global, message);
+      const senderTitle = sender ? (getPeerTitle(lang, sender) || String(sender.id)) : 'Unknown';
+      const text = getMessageSummaryText(lang, message, undefined, true, 500).trim();
+      if (!text) {
+        return undefined;
+      }
+
+      return {
+        messageId: message.id,
+        sender: senderTitle,
+        text,
+        date: message.date ? message.date * 1000 : undefined,
+      };
+    })
+    .filter(Boolean) as Array<{
+    messageId: number;
+    sender: string;
+    text: string;
+    date?: number;
+  }>;
+
+  if (!items.length) {
+    return [];
+  }
+
+  return [
+    '用户显式选中了以下消息，请优先围绕这些消息回答；只有当这些消息不足以支撑回答时，才补充附近上下文。',
+    ...formatAiPromptEvidenceLines(items),
+  ];
 }
 
 function applyAiStreamEventForTab(tabId: number, event: AiStreamEvent) {
@@ -1060,6 +1134,7 @@ addActionHandler('toggleAiAssistant', (global, actions, payload): ActionReturnTy
       ...aiAssistant,
       isOpen,
       error: undefined,
+      selectionContext: isOpen ? aiAssistant.selectionContext : undefined,
       contextLimit: clampAiContextLimit(
         aiAssistant.contextLimit,
         global.settings.byKey.aiSettings.defaultContextLimit,
@@ -1070,6 +1145,51 @@ addActionHandler('toggleAiAssistant', (global, actions, payload): ActionReturnTy
       isOpen: isOpen ? false : tabState.chatInfo.isOpen,
     },
   }, tabId);
+});
+
+addActionHandler('openAiAssistantWithSelectedMessages', (global, actions, payload): ActionReturnType => {
+  const { tabId = getCurrentTabId() } = payload || {};
+  const tabState = selectTabState(global, tabId);
+  const { selectedMessages } = tabState;
+  if (!selectedMessages?.messageIds.length) {
+    return global;
+  }
+
+  const currentMessageList = selectCurrentMessageList(global, tabId);
+  const threadId = currentMessageList?.threadId || MAIN_THREAD_ID;
+  const aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
+
+  return updateTabState(global, {
+    selectedMessages: undefined,
+    aiAssistant: {
+      ...aiAssistant,
+      isOpen: true,
+      error: undefined,
+      selectionContext: {
+        source: 'message-selection',
+        chatId: selectedMessages.chatId,
+        threadId,
+        messageIds: sortMessageIdsChronologically(global, selectedMessages.chatId, selectedMessages.messageIds),
+        createdAt: Date.now(),
+      },
+      contextLimit: clampAiContextLimit(
+        aiAssistant.contextLimit,
+        global.settings.byKey.aiSettings.defaultContextLimit,
+      ),
+    },
+    chatInfo: {
+      ...tabState.chatInfo,
+      isOpen: false,
+    },
+  }, tabId);
+});
+
+addActionHandler('clearAiSelectionContext', (global, actions, payload): ActionReturnType => {
+  const { tabId = getCurrentTabId() } = payload || {};
+
+  return updateAiState(global, tabId, {
+    selectionContext: undefined,
+  });
 });
 
 addActionHandler('setAiContextLimit', (global, actions, payload): ActionReturnType => {
@@ -1197,6 +1317,7 @@ addActionHandler('appendAiTurn', (global, actions, payload): ActionReturnType =>
     role,
     text,
     createdAt = Date.now(),
+    attachedMessageCount,
     thinkingLog,
     tabId = getCurrentTabId(),
   } = payload;
@@ -1215,6 +1336,7 @@ addActionHandler('appendAiTurn', (global, actions, payload): ActionReturnType =>
         role,
         text: normalizedText,
         createdAt,
+        attachedMessageCount,
         thinkingLog,
       },
     ],
@@ -1305,7 +1427,14 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
   };
 
   emitEvent({ type: 'run.started' });
-  actions.appendAiTurn({ role: 'user', text: trimmedPrompt, tabId });
+  global = getGlobal();
+  let aiAssistant = (selectTabState(global, tabId).aiAssistant || EMPTY_AI_ASSISTANT_STATE);
+  actions.appendAiTurn({
+    role: 'user',
+    text: trimmedPrompt,
+    attachedMessageCount: aiAssistant.selectionContext?.messageIds.length,
+    tabId,
+  });
   emitThinking(
     'answer',
     isEnglishPrompt ? 'Understanding your request' : '正在理解你的问题',
@@ -1316,7 +1445,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
 
   global = getGlobal();
   const tabState = selectTabState(global, tabId);
-  const aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
+  aiAssistant = tabState.aiAssistant || EMPTY_AI_ASSISTANT_STATE;
   const settings = global.settings.byKey.aiSettings;
   const provider = settings.provider;
   const modelInput = settings.model?.trim();
@@ -1350,7 +1479,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
     const currentChatSyncState = currentChatId
       ? global.chatSync.byChatId[currentChatId]
       : undefined;
-    const requestSystemPrompt = buildAiRequestSystemPrompt({
+    const baseRequestSystemPrompt = buildAiRequestSystemPrompt({
       languageCode,
       syncCoverage: currentChatId ? {
         chatId: currentChatId,
@@ -1360,11 +1489,28 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
         totalMessages: currentChatSyncState?.totalMessages,
       } : undefined,
     });
+    const selectedMessageEvidenceLines = buildSelectedMessageEvidenceLines(global, aiAssistant);
+    if (aiAssistant.selectionContext) {
+      global = updateAiState(global, tabId, {
+        selectionContext: undefined,
+      });
+      setGlobal(global);
+    }
+    const requestSystemPrompt = selectedMessageEvidenceLines.length
+      ? [
+        baseRequestSystemPrompt,
+        '## Selected Message Context',
+        '用户显式框选了当前问题的焦点消息。优先基于这些消息回答，不要默认扩展成整个聊天的宽泛总结；只有这些消息不足时，才补充邻近上下文。',
+      ].join('\n\n')
+      : baseRequestSystemPrompt;
 
     const localEvidence: AiEvidenceItem[] = [];
-    const contextEvidenceLines = formatAiPromptEvidenceLines(
-      localEvidence.slice(-Math.min(localEvidence.length, 12)),
-    );
+    const contextEvidenceLines = [
+      ...selectedMessageEvidenceLines,
+      ...formatAiPromptEvidenceLines(
+        localEvidence.slice(-Math.min(localEvidence.length, 12)),
+      ),
+    ];
     const toolOutputContextLines = formatAiPromptToolOutputLines(
       aiAssistant.toolOutputHistory || [],
       4,

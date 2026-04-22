@@ -129,6 +129,23 @@ describe('aiRunState', () => {
       activeStage: undefined,
       thinkingTrace: [],
     }));
+    expect(reset.selectionContext).toBeUndefined();
+  });
+
+  it('drops temporary selection context when resetting the assistant state', () => {
+    const reset = resetAiAssistantState({
+      contextLimit: 40,
+      isOpen: true,
+      selectionContext: {
+        source: 'message-selection',
+        chatId: 'chat-1',
+        threadId: 1,
+        messageIds: [7, 9],
+        createdAt: 123,
+      },
+    });
+
+    expect(reset.selectionContext).toBeUndefined();
   });
 
   it('handles terminal statuses and errors', () => {
