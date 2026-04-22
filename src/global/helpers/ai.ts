@@ -594,9 +594,21 @@ export function getAiApiUrl(provider: SupportedAiProvider, baseUrl?: string) {
       : 'https://api.anthropic.com/v1/messages';
   }
 
-  return normalizedBaseUrl
-    ? appendEndpointPath(normalizedBaseUrl, '/chat/completions')
-    : 'https://api.openai.com/v1/chat/completions';
+  if (!normalizedBaseUrl) {
+    return 'https://api.openai.com/v1/chat/completions';
+  }
+
+  // OpenAI-compatible providers often require `/v1/chat/completions` for host-only URLs.
+  try {
+    const pathName = new URL(normalizedBaseUrl).pathname.replace(/\/+$/, '');
+    if (!pathName) {
+      return appendEndpointPath(normalizedBaseUrl, '/v1/chat/completions');
+    }
+  } catch {
+    // Ignore URL parse errors and fallback to path append logic below.
+  }
+
+  return appendEndpointPath(normalizedBaseUrl, '/chat/completions');
 }
 
 export function parseOpenAiAssistantText(responseJson: any) {

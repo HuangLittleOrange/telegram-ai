@@ -514,7 +514,24 @@ describe('ai helper', () => {
           }],
         },
         { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1' },
-      ])).toBe(false);
+      ])).toBe(true);
+
+      expect(shouldOfferHistoryFetchTool([
+        { role: 'system', content: 'system prompt' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call-1',
+            type: 'function',
+            function: {
+              name: 'history-fetch',
+              arguments: '{"mode":"range"}',
+            },
+          }],
+        },
+        { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1' },
+      ], 1)).toBe(false);
     });
   });
 
