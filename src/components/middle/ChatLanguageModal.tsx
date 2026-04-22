@@ -11,6 +11,7 @@ import {
   selectRequestedChatTranslationLanguage,
   selectRequestedMessageTranslationLanguage,
   selectTabState,
+  selectTranslationLanguage,
 } from '../../global/selectors';
 import buildClassName from '../../util/buildClassName';
 import renderText from '../common/helpers/renderText';
@@ -151,10 +152,11 @@ export default memo(withGlobal<OwnProps>(
     const { chatId, messageId } = selectTabState(global).chatLanguageModal || {};
 
     const currentLanguageCode = selectLanguageCode(global);
+    const translationLanguage = selectTranslationLanguage(global);
     const activeTranslationLanguage = chatId
       ? messageId
-        ? selectRequestedMessageTranslationLanguage(global, chatId, messageId)
-        : selectRequestedChatTranslationLanguage(global, chatId)
+        ? selectRequestedMessageTranslationLanguage(global, chatId, messageId) || translationLanguage
+        : selectRequestedChatTranslationLanguage(global, chatId) || translationLanguage
       : undefined;
 
     return {

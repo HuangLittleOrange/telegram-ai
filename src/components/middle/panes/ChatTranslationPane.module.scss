@@ -13,14 +13,37 @@
   color: var(--color-primary);
 }
 
+.actions {
+  position: relative;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  min-width: 0;
+  max-width: min(32rem, calc(100% - 8rem));
+}
+
 .translateButton {
   min-width: 0;
-  max-width: min(32rem, calc(100% - 6rem));
   color: var(--color-primary);
 
   :global(.with-icon-start) {
     min-width: 0;
   }
+}
+
+.changeLanguageButton {
+  position: absolute;
+  top: 50%;
+  inset-inline-start: 100%;
+  transform: translateY(-50%);
+
+  flex-shrink: 0;
+
+  margin-inline-start: 0.125rem;
+
+  color: var(--color-primary);
 }
 
 .root :global(.DropdownMenu) {

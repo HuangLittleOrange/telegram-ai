@@ -167,19 +167,31 @@ const ChatTranslationPane: FC<OwnProps & StateProps> = ({
 
   return (
     <div ref={ref} className={styles.root}>
-      <Button
-        isText
-        noForcedUpperCase
-        fluid
-        size="tiny"
-        color="translucent"
-        className={styles.translateButton}
-        iconName="language"
-        iconClassName={styles.languageIcon}
-        onClick={handleTranslateClick}
-      >
-        <span className={styles.buttonText}>{buttonText}</span>
-      </Button>
+      <div className={styles.actions}>
+        <Button
+          isText
+          noForcedUpperCase
+          fluid
+          size="tiny"
+          color="translucent"
+          className={styles.translateButton}
+          iconName="language"
+          iconClassName={styles.languageIcon}
+          onClick={handleTranslateClick}
+        >
+          <span className={styles.buttonText}>{buttonText}</span>
+        </Button>
+        <Button
+          round
+          ripple
+          color="translucent"
+          size="tiny"
+          className={styles.changeLanguageButton}
+          onClick={handleChangeLanguage}
+          ariaLabel={oldLang('Chat.Translate.Menu.To')}
+          iconName="down"
+        />
+      </div>
       <DropdownMenu
         className="stickers-more-menu with-menu-transitions"
         trigger={MoreMenuButton}
