@@ -1,0 +1,48 @@
+@use "../../../styles/mixins";
+
+.root {
+  @include mixins.middle-header-pane;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  height: 2.875rem;
+  padding-inline: max(0.75rem, env(safe-area-inset-left)) max(0.5rem, env(safe-area-inset-right));
+
+  color: var(--color-primary);
+}
+
+.translateButton {
+  min-width: 0;
+  max-width: min(32rem, calc(100% - 6rem));
+  color: var(--color-primary);
+
+  :global(.with-icon-start) {
+    min-width: 0;
+  }
+}
+
+.root :global(.DropdownMenu) {
+  position: absolute;
+  inset-inline-end: max(0.5rem, env(safe-area-inset-right));
+}
+
+.languageIcon {
+  flex-shrink: 0;
+  font-size: 1.125rem;
+  line-height: 1;
+  color: var(--color-primary);
+}
+
+.buttonText {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activeMenuButton {
+  color: var(--color-primary);
+  opacity: 1;
+}

@@ -73,7 +73,7 @@ export function updateMessageTranslations<T extends GlobalState>(
   messageIds.forEach((messageId, index) => {
     const text = translations[index];
     global = updateMessageTranslation(global, chatId, messageId, toLanguageCode, {
-      text: text.text.length ? text : undefined,
+      text: text?.text.length ? text : undefined,
       isPending: false,
     });
   });

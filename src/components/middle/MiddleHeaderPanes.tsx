@@ -29,6 +29,7 @@ import AudioPlayer from './panes/AudioPlayer';
 import BotAdPane from './panes/BotAdPane';
 import BotVerificationPane from './panes/BotVerificationPane';
 import ChatReportPane from './panes/ChatReportPane';
+import ChatTranslationPane from './panes/ChatTranslationPane';
 import HeaderPinnedMessage from './panes/HeaderPinnedMessage';
 import PaidMessageChargePane from './panes/PaidMessageChargePane';
 
@@ -78,6 +79,7 @@ const MiddleHeaderPanes = ({
   const [getBotAdState, setBotAdState] = useSignal<PaneState>(FALLBACK_PANE_STATE);
   const [getBotVerificationState, setBotVerificationState] = useSignal<PaneState>(FALLBACK_PANE_STATE);
   const [getPaidMessageChargeState, setPaidMessageChargeState] = useSignal<PaneState>(FALLBACK_PANE_STATE);
+  const [getTranslationState, setTranslationState] = useSignal<PaneState>(FALLBACK_PANE_STATE);
 
   const isPinnedMessagesFullWidth = isAudioPlayerRendered || !isDesktop;
 
@@ -99,6 +101,7 @@ const MiddleHeaderPanes = ({
     const audioPlayerState = getAudioPlayerState();
     const botVerificationState = getBotVerificationState();
     const pinnedState = getPinnedState();
+    const translationState = getTranslationState();
     const groupCallState = getGroupCallState();
     const chatReportState = getChatReportState();
     const botAdState = getBotAdState();
@@ -106,7 +109,7 @@ const MiddleHeaderPanes = ({
 
     // Keep in sync with the order of the panes in the DOM
     const stateArray = [audioPlayerState, groupCallState,
-      chatReportState, botVerificationState, pinnedState, botAdState, paidMessageState];
+      chatReportState, botVerificationState, pinnedState, translationState, botAdState, paidMessageState];
 
     const isFirstRender = isFirstRenderRef.current;
     const totalHeight = stateArray.reduce((acc, state) => acc + state.height, 0);
@@ -122,7 +125,7 @@ const MiddleHeaderPanes = ({
       });
     });
   }, [getAudioPlayerState, getGroupCallState, getPinnedState,
-    getChatReportState, getBotAdState, getBotVerificationState, getPaidMessageChargeState]);
+    getTranslationState, getChatReportState, getBotAdState, getBotVerificationState, getPaidMessageChargeState]);
 
   if (!shouldRender) return undefined;
 
@@ -174,6 +177,12 @@ const MiddleHeaderPanes = ({
         onPaneStateChange={setPinnedState}
         isFullWidth
         shouldHide={!isPinnedMessagesFullWidth}
+      />
+      <ChatTranslationPane
+        chatId={chatId}
+        threadId={threadId}
+        messageListType={messageListType}
+        onPaneStateChange={setTranslationState}
       />
       <BotAdPane
         chatId={chatId}

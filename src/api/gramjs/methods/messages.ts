@@ -2638,19 +2638,20 @@ export async function transcribeAudio({
 
 export async function translateText(params: TranslateTextParams) {
   let result;
+  const toLang = normalizeTranslationLanguageCode(params.toLanguageCode);
   const isMessageTranslation = 'chat' in params;
   if (isMessageTranslation) {
-    const { chat, messageIds, toLanguageCode } = params;
+    const { chat, messageIds } = params;
     result = await invokeRequest(new GramJs.messages.TranslateText({
       peer: buildInputPeer(chat.id, chat.accessHash),
       id: messageIds,
-      toLang: toLanguageCode,
+      toLang,
     }));
   } else {
-    const { text, toLanguageCode } = params;
+    const { text } = params;
     result = await invokeRequest(new GramJs.messages.TranslateText({
       text: text.map((t) => buildInputTextWithEntities(t)),
-      toLang: toLanguageCode,
+      toLang,
     }));
   }
 
@@ -2689,12 +2690,24 @@ export async function fetchMessageSummary({
   const result = await invokeRequest(new GramJs.messages.SummarizeText({
     peer: buildInputPeer(chat.id, chat.accessHash),
     id,
-    toLang: toLanguageCode,
+    toLang: toLanguageCode ? normalizeTranslationLanguageCode(toLanguageCode) : undefined,
   }));
 
   if (!result) return undefined;
 
   return buildApiFormattedText(result);
+}
+
+function normalizeTranslationLanguageCode(languageCode: string) {
+  const normalizedCode = languageCode.trim().toLowerCase();
+  if (normalizedCode === 'zh-hans' || normalizedCode.startsWith('zh-hans-')) {
+    return 'zh';
+  }
+  if (normalizedCode === 'zh-hant' || normalizedCode.startsWith('zh-hant-')) {
+    return 'zh-TW';
+  }
+
+  return languageCode;
 }
 
 function handleMultipleLocalMessagesUpdate(

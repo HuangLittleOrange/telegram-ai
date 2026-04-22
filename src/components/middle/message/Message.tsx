@@ -2123,8 +2123,10 @@ export default memo(withGlobal<OwnProps>(
     const requestedTranslationLanguage = selectRequestedMessageTranslationLanguage(global, chatId, message.id);
     const requestedChatTranslationLanguage = selectRequestedChatTranslationLanguage(global, chatId);
 
-    const areTranslationsEnabled = IS_TRANSLATION_SUPPORTED && global.settings.byKey.canTranslate
-      && !requestedChatTranslationLanguage; // Stop separate language detection if chat translation is requested
+    const shouldDetectChatLanguage = selectShouldDetectChatLanguage(global, chatId);
+    const areTranslationsEnabled = IS_TRANSLATION_SUPPORTED && (
+      global.settings.byKey.canTranslate || shouldDetectChatLanguage
+    ) && !requestedChatTranslationLanguage; // Stop separate language detection if chat translation is requested
 
     const isConnected = global.connectionState === 'connectionStateReady';
 
@@ -2219,7 +2221,7 @@ export default memo(withGlobal<OwnProps>(
       hasTopicChip,
       chatTranslations,
       areTranslationsEnabled,
-      shouldDetectChatLanguage: selectShouldDetectChatLanguage(global, chatId),
+      shouldDetectChatLanguage,
       requestedTranslationLanguage,
       requestedChatTranslationLanguage,
       hasLinkedChat: Boolean(chatFullInfo?.linkedChatId),
