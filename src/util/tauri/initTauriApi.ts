@@ -1,3 +1,5 @@
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
 import { IS_MAC_OS } from '../browser/windowEnvironment';
 
 export default function initTauriApi() {
@@ -31,7 +33,7 @@ export default function initTauriApi() {
     openNewWindow,
     relaunch: () => import('@tauri-apps/plugin-process').then(({ relaunch }) => relaunch()),
     checkUpdate: () => import('@tauri-apps/plugin-updater').then(({ check }) => check()),
-    getCurrentWindow: () => import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow()),
+    getCurrentWindow,
     setWindowTitle,
   });
 }

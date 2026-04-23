@@ -1594,7 +1594,7 @@ addActionHandler('requestAiPrompt', async (global, actions, payload): Promise<vo
               type: 'thinking.trace',
               stage: 'answer',
               title: isEnglishPrompt ? 'Model thinking' : '模型思考中',
-              detail,
+              detail: isEnglishPrompt ? detail : undefined,
             });
           };
           const completion = await requestOpenAiChatCompletion({

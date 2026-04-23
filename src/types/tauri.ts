@@ -8,7 +8,7 @@ type TauriApi = {
   openNewWindow: (url: string) => Promise<void>;
   relaunch: () => Promise<void>;
   checkUpdate: () => Promise<Update | null>;
-  getCurrentWindow: () => Promise<TauriWindow>;
+  getCurrentWindow: () => TauriWindow;
   setWindowTitle: (title: string) => Promise<void>;
 };
 

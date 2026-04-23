@@ -1,3 +1,4 @@
+import type { Window as TauriWindow } from '@tauri-apps/api/window';
 import type { ElementRef } from '../../lib/teact/teact';
 import { useEffect, useLayoutEffect, useState } from '../../lib/teact/teact';
 
@@ -89,18 +90,24 @@ export const useFullscreenStatus = () => {
       setIsFullscreen(checkIfFullscreen());
     };
 
+    const syncTauriFullscreenState = (tauriWindow: TauriWindow | undefined) => {
+      if (!tauriWindow) {
+        return;
+      }
+
+      void tauriWindow.isFullscreen().then(setIsFullscreen).catch(() => undefined);
+    };
+
     let removeTauriListener: VoidFunction | undefined;
     const setupTauriListener = async () => {
-      const tauriWindow = await window.tauri?.getCurrentWindow();
-      removeTauriListener = await tauriWindow.onResized(() => {
-        tauriWindow.isFullscreen().then(setIsFullscreen);
+      const tauriWindow = window.tauri?.getCurrentWindow();
+      removeTauriListener = await tauriWindow?.onResized(() => {
+        syncTauriFullscreenState(tauriWindow);
       });
     };
 
     if (IS_TAURI) {
-      window.tauri?.getCurrentWindow().then((tauriWindow) => {
-        tauriWindow.isFullscreen().then(setIsFullscreen);
-      });
+      syncTauriFullscreenState(window.tauri?.getCurrentWindow());
       setupTauriListener();
     }
 

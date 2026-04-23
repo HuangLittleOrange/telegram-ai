@@ -33,15 +33,17 @@ impl Default for AppStateStruct {
 
 pub type AppState = Mutex<AppStateStruct>;
 
-pub const TRAFFIC_LIGHT_POSITION_OVERLAY_LEGACY: LogicalPosition<f64> = LogicalPosition::new(12.0, 26.0);
-pub const TRAFFIC_LIGHT_POSITION_OVERLAY_26: LogicalPosition<f64> = LogicalPosition::new(12.0, 30.0);
+pub const TRAFFIC_LIGHT_POSITION_OVERLAY_LEGACY: LogicalPosition<f64> =
+  LogicalPosition::new(12.0, 26.0);
+pub const TRAFFIC_LIGHT_POSITION_OVERLAY_26: LogicalPosition<f64> =
+  LogicalPosition::new(12.0, 30.0);
 pub const TRAFFIC_LIGHT_POSITION_DEFAULT: LogicalPosition<f64> = LogicalPosition::new(12.0, 12.0);
 
 pub static TRAFFIC_LIGHT_POSITION_OVERLAY: LazyLock<LogicalPosition<f64>> = LazyLock::new(|| {
   if let tauri_plugin_os::Version::Semantic(major, _, _) = tauri_plugin_os::version() {
-      if major >= 26 {
-          return TRAFFIC_LIGHT_POSITION_OVERLAY_26;
-      }
+    if major >= 26 {
+      return TRAFFIC_LIGHT_POSITION_OVERLAY_26;
+    }
   }
   TRAFFIC_LIGHT_POSITION_OVERLAY_LEGACY
 });
@@ -346,22 +348,15 @@ pub(crate) fn open_new_window(
   if let Ok(mut states) = WINDOW_STATES.lock() {
     let new_state = WindowState {
       title: DEFAULT_WINDOW_TITLE.to_string(),
-      is_overlay: cfg!(target_os = "macos"),
+      is_overlay: false,
     };
     states.insert(window_label.to_string(), new_state);
   }
 
   #[cfg(target_os = "macos")]
-  let new_window_builder = new_window_builder.title_bar_style(tauri::TitleBarStyle::Overlay);
-  #[cfg(target_os = "macos")]
-  let new_window_builder = new_window_builder.title("");
+  let new_window_builder = new_window_builder.title_bar_style(tauri::TitleBarStyle::Visible);
 
   let window = new_window_builder.build()?;
-
-  #[cfg(target_os = "macos")]
-  if let Some(base_window) = app.get_window(&window_label) {
-    mac::setup_traffic_light_positioner(&base_window, *TRAFFIC_LIGHT_POSITION_OVERLAY);
-  }
 
   // Apply stored notification count to the new window
   if let Some(state) = app.try_state::<AppState>() {

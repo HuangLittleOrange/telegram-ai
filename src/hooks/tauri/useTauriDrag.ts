@@ -6,7 +6,7 @@ import { IS_MAC_OS } from '../../util/browser/windowEnvironment';
 const NO_DRAG_ELEMENTS = 'input, a, button';
 
 const useTauriDrag = () => {
-  const handleMouseDown = useCallback(async (event: MouseEvent) => {
+  const handleMouseDown = useCallback((event: MouseEvent) => {
     if (!(event.target instanceof HTMLElement)) {
       return;
     }
@@ -16,8 +16,9 @@ const useTauriDrag = () => {
     }
 
     if (event.target?.closest('[data-tauri-drag-region]')) {
-      const tauriWindow = await window.tauri?.getCurrentWindow();
-      tauriWindow?.startDragging();
+      const tauriWindow = window.tauri?.getCurrentWindow();
+      const dragPromise = tauriWindow?.startDragging();
+      void dragPromise?.catch(() => undefined);
     }
   }, []);
 

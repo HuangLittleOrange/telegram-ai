@@ -69,12 +69,14 @@ fn position_traffic_lights(ns_window_handle: UnsafeWindowHandle, position: Logic
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct WindowState<R: Runtime> {
   window: Window<R>,
   // Store desired position of traffic lights to avoid capturing external env in callbacks
   traffic_position: LogicalPosition<f64>,
 }
 
+#[allow(dead_code)]
 pub fn setup_traffic_light_positioner<R: Runtime>(
   window: &Window<R>,
   traffic_position: LogicalPosition<f64>,

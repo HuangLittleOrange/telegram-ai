@@ -890,7 +890,6 @@ export default memo(withGlobal<OwnProps>(
     const chatBot = !isSystemBot(chatId) ? selectBot(global, chatId) : undefined;
     const userFullInfo = isPrivate ? selectUserFullInfo(global, chatId) : undefined;
     const chatFullInfo = !isPrivate ? selectChatFullInfo(global, chatId) : undefined;
-    const fullInfo = userFullInfo || chatFullInfo;
     const canGift = selectCanGift(global, chatId);
 
     const topic = selectTopic(global, chatId, threadId);
@@ -900,8 +899,9 @@ export default memo(withGlobal<OwnProps>(
     );
     const canEditTopic = topic && getCanManageTopic(chat, topic);
     const canManage = selectCanManage(global, chatId);
-    // Context menu item should only be displayed if user hid translation panel
-    const canTranslate = selectCanTranslateChat(global, chatId) && fullInfo?.isTranslationDisabled;
+    // Always expose a translation entry in menu for translatable chats,
+    // so users can recover quickly even if full info is not loaded yet.
+    const canTranslate = selectCanTranslateChat(global, chatId);
 
     const isSavedDialog = getIsSavedDialog(chatId, threadId, global.currentUserId);
     const savedDialog = isSavedDialog ? selectChat(global, String(threadId)) : undefined;

@@ -28,11 +28,9 @@ const ActiveCallHeader = ({
 
   useEffect(() => {
     document.body.classList.toggle('has-call-header', Boolean(isCallPanelVisible));
-    window.tauri?.markTitleBarOverlay(!isCallPanelVisible);
 
     return () => {
       document.body.classList.toggle('has-call-header', false);
-      window.tauri?.markTitleBarOverlay(true);
     };
   }, [isCallPanelVisible]);
 

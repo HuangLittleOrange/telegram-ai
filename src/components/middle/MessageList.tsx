@@ -1,5 +1,5 @@
 import { beginHeavyAnimation, memo, useEffect, useMemo, useRef } from '@teact';
-import { addExtraClass, removeExtraClass } from '@teact/teact-dom';
+import { addExtraClass, removeExtraClass, setExtraStyles } from '@teact/teact-dom';
 import { getActions, getGlobal, withGlobal } from '../../global';
 
 import type { ApiChatFullInfo, ApiMessage, ApiRestrictionReason, ApiTopic } from '../../api/types';
@@ -185,6 +185,8 @@ const SELECT_MODE_ANIMATION_DURATION = 200;
 const UNREAD_DIVIDER_CLASS = 'unread-divider';
 const FORCE_MESSAGES_SCROLL_CLASS = 'force-messages-scroll';
 const BOTTOM_SNAP_CLASS = 'with-bottom-snap';
+const CUSTOM_SCROLLBAR_CLASS = 'with-custom-scrollbar';
+const CUSTOM_SCROLLBAR_MIN_THUMB_HEIGHT = 24;
 
 const runDebouncedForScroll = debounce((cb) => cb(), SCROLL_DEBOUNCE, false);
 
@@ -477,6 +479,36 @@ const MessageList = ({
 
   const { isScrolled, updateStickyDates } = useStickyDates();
 
+  const updateCustomScrollbar = useLastCallback((container = containerRef.current) => {
+    if (!container) return;
+
+    const { clientHeight, scrollHeight, scrollTop } = container;
+    const scrollableHeight = scrollHeight - clientHeight;
+
+    if (scrollableHeight <= 1) {
+      requestMutation(() => {
+        removeExtraClass(container, CUSTOM_SCROLLBAR_CLASS);
+      });
+      return;
+    }
+
+    const thumbHeight = Math.max(
+      CUSTOM_SCROLLBAR_MIN_THUMB_HEIGHT,
+      Math.round((clientHeight / scrollHeight) * clientHeight),
+    );
+    const thumbTop = Math.round(
+      (clientHeight - thumbHeight) * (scrollTop / scrollableHeight),
+    );
+
+    requestMutation(() => {
+      addExtraClass(container, CUSTOM_SCROLLBAR_CLASS);
+      setExtraStyles(container, {
+        '--message-list-scrollbar-thumb-height': `${thumbHeight}px`,
+        '--message-list-scrollbar-thumb-top': `${thumbTop}px`,
+      });
+    });
+  });
+
   const updateBottomSnapClass = useLastCallback(() => {
     const container = containerRef.current;
     const bottomTrigger = container?.querySelector<HTMLDivElement>('.fab-trigger');
@@ -515,6 +547,8 @@ const MessageList = ({
     if (!container) {
       return;
     }
+
+    updateCustomScrollbar(container);
 
     if (!memoFocusingIdRef.current) {
       updateStickyDates(container);
@@ -740,6 +774,7 @@ const MessageList = ({
 
       return () => {
         resetScroll(container, Math.ceil(newScrollTop));
+        updateCustomScrollbar(container);
         restartCurrentScrollAnimation();
 
         scrollOffsetRef.current = Math.max(Math.ceil(scrollHeight - newScrollTop), offsetHeight);
@@ -826,6 +861,12 @@ const MessageList = ({
   ) : (
     Content.Loading
   );
+
+  useEffect(() => {
+    requestMeasure(() => {
+      updateCustomScrollbar();
+    });
+  }, [activeKey, getContainerHeight, messageIds, updateCustomScrollbar]);
 
   function renderContent() {
     return activeKey === Content.Restricted ? (

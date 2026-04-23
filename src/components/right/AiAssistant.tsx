@@ -420,7 +420,9 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   const [historyGlobalQuery, setHistoryGlobalQuery] = useState('');
   const [selectedHistoryDayStartSec, setSelectedHistoryDayStartSec] = useState<number | undefined>();
   const [liveDraftVisibleLength, setLiveDraftVisibleLength] = useState(0);
-  const isSupportedChat = Boolean(chat && (isChatGroup(chat) || isChatChannel(chat)));
+  const isSupportedChat = Boolean(chat && (
+    chat.type === 'chatTypePrivate' || isChatGroup(chat) || isChatChannel(chat)
+  ));
   const resolvedThreadId = threadId || MAIN_THREAD_ID;
   const isStreaming = streamStatus === 'streaming' || streamStatus === 'cancelling';
   const isCancelling = streamStatus === 'cancelling';
@@ -527,6 +529,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   const historyRangeEndSec = historyBounds?.endSec;
   const isRangeScopedSync = syncState.selectedTimeRange?.mode === 'custom';
   const hasReliableScopedTotal = syncState.scopedTotalMessages !== undefined;
+  const isHistorySyncing = syncState.status === 'syncing';
   const progressBaseTotal = isRangeScopedSync ? syncState.scopedTotalMessages : syncState.totalMessages;
   const syncProgress = !progressBaseTotal
     ? 0
@@ -620,7 +623,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
   }, [chatId]);
 
   useEffect(() => {
-    if (!isHistoryBrowserOpen || !isSupportedChat) {
+    if (!isHistoryBrowserOpen || !isSupportedChat || isHistorySyncing) {
       return undefined;
     }
 
@@ -677,10 +680,16 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     isHistoryBrowserOpen,
     isSupportedChat,
     resolvedThreadId,
+    isHistorySyncing,
   ]);
 
   useEffect(() => {
-    if (!isHistoryBrowserOpen || isHistoryGlobalSearchActive || selectedHistoryDayStartSec === undefined) {
+    if (
+      !isHistoryBrowserOpen
+      || isHistorySyncing
+      || isHistoryGlobalSearchActive
+      || selectedHistoryDayStartSec === undefined
+    ) {
       return undefined;
     }
 
@@ -720,10 +729,17 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [chatId, isHistoryBrowserOpen, isHistoryGlobalSearchActive, resolvedThreadId, selectedHistoryDayStartSec]);
+  }, [
+    chatId,
+    isHistoryBrowserOpen,
+    isHistorySyncing,
+    isHistoryGlobalSearchActive,
+    resolvedThreadId,
+    selectedHistoryDayStartSec,
+  ]);
 
   useEffect(() => {
-    if (!isHistoryBrowserOpen) {
+    if (!isHistoryBrowserOpen || isHistorySyncing) {
       return undefined;
     }
 
@@ -793,6 +809,7 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
     historyRangeEndSec,
     historyRangeStartSec,
     isHistoryBrowserOpen,
+    isHistorySyncing,
     normalizedHistoryGlobalQuery,
     resolvedThreadId,
   ]);
@@ -1121,75 +1138,63 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
         </div>
       )}
 
-      {isSupportedChat && isTakeoutHelpOpen && syncState.requiresTakeoutAuthorization && (
-        <div
-          className="AiAssistant__syncSettingsBackdrop AiAssistant__takeoutHelpBackdrop"
-          onClick={() => setIsTakeoutHelpOpen(false)}
-          role="presentation"
+      {isSupportedChat && syncState.requiresTakeoutAuthorization && (
+        <Modal
+          isOpen={isTakeoutHelpOpen}
+          onClose={() => setIsTakeoutHelpOpen(false)}
+          title="Data Export 需要授权确认"
+          hasCloseButton
+          className="AiAssistant__takeoutHelpModal"
+          contentClassName="AiAssistant__takeoutHelpModalContent"
+          dialogClassName="AiAssistant__takeoutHelp"
         >
-          <div
-            className="AiAssistant__takeoutHelp"
-            onClick={(e) => e.stopPropagation()}
-            role="presentation"
-          >
-            <div className="AiAssistant__takeoutHelpHeader">
-              <div className="AiAssistant__takeoutHelpTitle">Data Export 需要授权确认</div>
-              <button
-                type="button"
-                className="AiAssistant__syncSettingsClose"
-                onClick={() => setIsTakeoutHelpOpen(false)}
-              >
-                关闭
-              </button>
+          <div className="AiAssistant__takeoutHelpBody">
+            <div className="AiAssistant__takeoutHelpText">
+              Telegram 会对 Data Export 做安全校验，请先在官方客户端确认导出请求。
             </div>
-            <div className="AiAssistant__takeoutHelpBody">
+            {takeoutDelayText && (
               <div className="AiAssistant__takeoutHelpText">
-                Telegram 会对 Data Export 做安全校验，请先在官方客户端确认导出请求。
+                当前建议等待约
+                {' '}
+                <strong>{takeoutDelayText}</strong>
+                {' '}
+                后重试（约
+                {' '}
+                <strong>{takeoutRetryAtText}</strong>
+                {' '}
+                ）。
               </div>
-              {takeoutDelayText && (
-                <div className="AiAssistant__takeoutHelpText">
-                  当前建议等待约
-                  {' '}
-                  <strong>{takeoutDelayText}</strong>
-                  {' '}
-                  后重试（约
-                  {' '}
-                  <strong>{takeoutRetryAtText}</strong>
-                  {' '}
-                  ）。
-                </div>
-              )}
-              <div className="AiAssistant__takeoutHelpSteps">
-                <div className="AiAssistant__takeoutHelpStep">1. 在手机或 Telegram Desktop 打开同一账号。</div>
-                <div className="AiAssistant__takeoutHelpStep">2. 查看 Telegram 的安全通知或服务消息并确认授权。</div>
-                <div className="AiAssistant__takeoutHelpStep">3. 回到这里点击“重新同步”。</div>
-              </div>
-              <div className="AiAssistant__takeoutHelpHint">
-                如果没收到通知，请保持官方客户端在线几分钟后再试一次。
-              </div>
+            )}
+            <div className="AiAssistant__takeoutHelpSteps">
+              <div className="AiAssistant__takeoutHelpStep">1. 在手机或 Telegram Desktop 打开同一账号。</div>
+              <div className="AiAssistant__takeoutHelpStep">2. 查看 Telegram 的安全通知或服务消息并确认授权。</div>
+              <div className="AiAssistant__takeoutHelpStep">3. 回到这里点击“重新同步”。</div>
             </div>
-            <div className="AiAssistant__takeoutHelpActions">
-              <Button
-                size="smaller"
-                color="translucent"
-                onClick={() => setIsTakeoutHelpOpen(false)}
-              >
-                我知道了
-              </Button>
-              <Button
-                size="smaller"
-                color="primary"
-                onClick={() => {
-                  setIsTakeoutHelpOpen(false);
-                  resetChatSync({ chatId, threadId: resolvedThreadId });
-                  startChatSync({ chatId, threadId: resolvedThreadId });
-                }}
-              >
-                重新同步
-              </Button>
+            <div className="AiAssistant__takeoutHelpHint">
+              如果没收到通知，请保持官方客户端在线几分钟后再试一次。
             </div>
           </div>
-        </div>
+          <div className="AiAssistant__takeoutHelpActions">
+            <Button
+              size="smaller"
+              color="translucent"
+              onClick={() => setIsTakeoutHelpOpen(false)}
+            >
+              我知道了
+            </Button>
+            <Button
+              size="smaller"
+              color="primary"
+              onClick={() => {
+                setIsTakeoutHelpOpen(false);
+                resetChatSync({ chatId, threadId: resolvedThreadId });
+                startChatSync({ chatId, threadId: resolvedThreadId });
+              }}
+            >
+              重新同步
+            </Button>
+          </div>
+        </Modal>
       )}
 
       {isSupportedChat && (
@@ -1343,11 +1348,14 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                 value={historyGlobalQuery}
                 placeholder="搜索当前范围内的全部聊天记录关键词"
                 onChange={(e) => setHistoryGlobalQuery(e.currentTarget.value)}
+                disabled={isHistorySyncing}
               />
               <div className="AiAssistant__historySearchHint">
-                {isHistoryGlobalSearchActive
-                  ? '正在全局搜索本地历史记录，可继续点左侧日期缩小范围。'
-                  : '这里的搜索会检索当前时间范围内的全部本地历史记录。'}
+                {isHistorySyncing
+                  ? '同步进行中，暂停后可搜索本地已同步记录。'
+                  : isHistoryGlobalSearchActive
+                    ? '正在全局搜索本地历史记录，可继续点左侧日期缩小范围。'
+                    : '这里的搜索会检索当前时间范围内的全部本地历史记录。'}
               </div>
             </div>
 
@@ -1372,9 +1380,14 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                     value={historyDayQuery}
                     placeholder="搜索日期，如 2026-04-11"
                     onChange={(e) => setHistoryDayQuery(e.currentTarget.value)}
+                    disabled={isHistorySyncing}
                   />
                   <div className="AiAssistant__historyDayList">
-                    {isHistoryDaysLoading ? (
+                    {isHistorySyncing ? (
+                      <div className="AiAssistant__historyEmpty AiAssistant__historyEmpty--syncing">
+                        正在同步聊天记录，暂停同步后显示稳定列表。
+                      </div>
+                    ) : isHistoryDaysLoading ? (
                       <div className="AiAssistant__historyEmpty">正在读取日期列表...</div>
                     ) : filteredHistoryDays.length ? filteredHistoryDays.map((day) => (
                       <button
@@ -1397,7 +1410,11 @@ const AiAssistant: FC<OwnProps & StateProps> = ({
                 </div>
 
                 <div className="AiAssistant__historyPane is-messages">
-                  {selectedHistoryDay || isHistoryGlobalSearchActive ? (
+                  {isHistorySyncing ? (
+                    <div className="AiAssistant__historyEmpty AiAssistant__historyEmpty--syncing">
+                      正在同步中，请先暂停同步，再查看当天消息列表。
+                    </div>
+                  ) : selectedHistoryDay || isHistoryGlobalSearchActive ? (
                     <>
                       <div className="AiAssistant__historyPaneTop">
                         <div className="AiAssistant__historyDayHeading">

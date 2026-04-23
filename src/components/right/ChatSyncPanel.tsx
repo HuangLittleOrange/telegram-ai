@@ -77,7 +77,9 @@ const ChatSyncPanel = ({
     resetChatSync,
   } = getActions();
 
-  const isSupportedChat = Boolean(chat && (isChatGroup(chat) || isChatChannel(chat)));
+  const isSupportedChat = Boolean(chat && (
+    chat.type === 'chatTypePrivate' || isChatGroup(chat) || isChatChannel(chat)
+  ));
   const resolvedThreadId = threadId || MAIN_THREAD_ID;
 
   useEffect(() => {
