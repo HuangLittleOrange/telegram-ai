@@ -18,11 +18,12 @@ on:
         type: boolean
   push:
     branches:
+      - main
       - master
 
 env:
-  IS_ON_MASTER: ${{ github.ref == 'refs/heads/master' }}
-  SHOULD_PUBLISH: ${{ github.ref == 'refs/heads/master' && vars.PUBLISH_REPO || '' }}
+  IS_ON_MASTER: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+  SHOULD_PUBLISH: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && vars.PUBLISH_REPO || '' }}
   PUBLISH_REPO: ${{ vars.PUBLISH_REPO }}
   GH_TOKEN: ${{ secrets.GH_TOKEN }}
   UPDATER_GIST_URL: ${{ secrets.UPDATER_GIST_URL }}
@@ -65,9 +66,9 @@ jobs:
           PACKAGE_VERSION: ${{ needs.get-version.outputs.package-version }}
           TAG_NAME: ${{ needs.get-version.outputs.tag-name }}
         run: |
-          # For non-master branches or when publishing is disabled, always continue
+          # For non-release branches or when publishing is disabled, always continue
           if [ -z "$SHOULD_PUBLISH" ]; then
-            echo "🚧 Publishing disabled (non-master branch or PUBLISH_REPO not set)"
+            echo "🚧 Publishing disabled (not on main/master or PUBLISH_REPO not set)"
             echo "should-skip=false" >> $GITHUB_OUTPUT
             exit 0
           fi
