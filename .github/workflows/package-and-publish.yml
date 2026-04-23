@@ -17,13 +17,13 @@ on:
         default: false
         type: boolean
   push:
-    branches:
-      - main
-      - master
+    tags:
+      - 'v*'
+      - 'air_v*'
 
 env:
-  IS_ON_MASTER: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-  SHOULD_PUBLISH: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && vars.PUBLISH_REPO || '' }}
+  IS_TAG_RELEASE: ${{ github.ref_type == 'tag' }}
+  SHOULD_PUBLISH: ${{ github.ref_type == 'tag' && vars.PUBLISH_REPO || '' }}
   PUBLISH_REPO: ${{ vars.PUBLISH_REPO }}
   GH_TOKEN: ${{ secrets.GH_TOKEN }}
   UPDATER_GIST_URL: ${{ secrets.UPDATER_GIST_URL }}
@@ -44,8 +44,12 @@ jobs:
         id: extract-version
         run: |
           PACKAGE_VERSION=$(grep -m1 '^version' tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          TAG_NAME="air_v${PACKAGE_VERSION}"
+          TAG_NAME="${GITHUB_REF_NAME:-air_v${PACKAGE_VERSION}}"
+          RELEASE_VERSION=$(echo "$TAG_NAME" | sed -E 's/^(air_v|v)//')
           RELEASE_NAME="Telegram Air v${PACKAGE_VERSION}"
+          if [ -n "$RELEASE_VERSION" ]; then
+            RELEASE_NAME="Telegram Air v${RELEASE_VERSION}"
+          fi
           echo "package-version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
           echo "tag-name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "release-name=$RELEASE_NAME" >> $GITHUB_OUTPUT
@@ -66,9 +70,9 @@ jobs:
           PACKAGE_VERSION: ${{ needs.get-version.outputs.package-version }}
           TAG_NAME: ${{ needs.get-version.outputs.tag-name }}
         run: |
-          # For non-release branches or when publishing is disabled, always continue
+          # For non-tag runs or when publishing is disabled, always continue
           if [ -z "$SHOULD_PUBLISH" ]; then
-            echo "🚧 Publishing disabled (not on main/master or PUBLISH_REPO not set)"
+            echo "🚧 Publishing disabled (not a tag run or PUBLISH_REPO not set)"
             echo "should-skip=false" >> $GITHUB_OUTPUT
             exit 0
           fi
