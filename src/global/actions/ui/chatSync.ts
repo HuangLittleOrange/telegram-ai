@@ -170,6 +170,19 @@ function buildDefaultChatSyncState(): ChatSyncState {
   };
 }
 
+function buildSyncingChatSyncPatch(): Partial<ChatSyncState> {
+  return {
+    status: 'syncing',
+    lastProgressAt: Date.now(),
+    error: undefined,
+    errorCode: undefined,
+    errorDetail: undefined,
+    requiresTakeoutAuthorization: undefined,
+    takeoutInitDelaySeconds: undefined,
+    updatedAt: Date.now(),
+  };
+}
+
 function getChatSyncState(global: GlobalState, chatId: string): ChatSyncState {
   return global.chatSync.byChatId[chatId] || buildDefaultChatSyncState();
 }
@@ -934,6 +947,7 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
   const resolvedThreadId = resolveSyncThreadId(payload.threadId);
   const key = getSyncKey(payload.chatId, resolvedThreadId);
   if (runningSyncKeys.has(key)) {
+    applyChatSyncStatePatch(payload.chatId, buildSyncingChatSyncPatch());
     return;
   }
 
@@ -950,14 +964,17 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
   let selectedSyncMethod: ChatSyncMethod = DEFAULT_METHOD;
   let runtimeSyncError: unknown;
   try {
-    await loadChatSyncStatsInternal(payload.chatId, resolvedThreadId);
-
     global = getGlobal();
     const chat = selectChat(global, payload.chatId);
     if (!chat) {
       return;
     }
 
+    global = applyChatSyncStatePatch(payload.chatId, buildSyncingChatSyncPatch());
+
+    await loadChatSyncStatsInternal(payload.chatId, resolvedThreadId);
+
+    global = getGlobal();
     let syncState = getChatSyncState(global, payload.chatId);
     const syncMethod = syncState.selectedMethod;
     selectedSyncMethod = syncMethod;
@@ -975,16 +992,7 @@ addActionHandler('startChatSync', async (_global, _actions, payload): Promise<vo
     const bounds = resolveTimeRangeBoundsSec(selectedTimeRange);
     const isSavedDialog = getIsSavedDialog(payload.chatId, resolvedThreadId, global.currentUserId);
 
-    global = applyChatSyncStatePatch(payload.chatId, {
-      status: 'syncing',
-      lastProgressAt: Date.now(),
-      error: undefined,
-      errorCode: undefined,
-      errorDetail: undefined,
-      requiresTakeoutAuthorization: undefined,
-      takeoutInitDelaySeconds: undefined,
-      updatedAt: Date.now(),
-    });
+    global = applyChatSyncStatePatch(payload.chatId, buildSyncingChatSyncPatch());
 
     if (syncMethod === 'dataExport') {
       const takeoutSession = await callApi('initTakeoutSessionForSync');
